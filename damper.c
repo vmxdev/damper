@@ -74,7 +74,9 @@ config_read(struct userdata *u, char *confname)
 		if ((cmd[0] == '#') || (scanres < 2)) {
 			continue;
 		}
-		if (!strcmp(cmd, "iface")) {
+		if (!strcmp(cmd, "queue")) {
+			u->queue = atoi(p1);
+		} else if (!strcmp(cmd, "iface")) {
 			strncpy(u->interface, p1, IFNAMSIZ);
 		} else if (!strcmp(cmd, "dscp")) {
 			u->dscp = atoi(p1);
@@ -90,7 +92,7 @@ config_read(struct userdata *u, char *confname)
 			if (!strcmp(p1, "yes")) {
 				u->stat = 1;
 			}
-		} else if (!strcmp(cmd, "queue")) {
+		} else if (!strcmp(cmd, "packets")) {
 			u->qlen = atoi(p1);
 		} else {
 			/* module parameters */
@@ -440,9 +442,9 @@ main(int argc, char *argv[])
 		goto fail_bind;
 	}
 
-	qh = nfq_create_queue(h,  3, &on_packet, u); /* group */
+	qh = nfq_create_queue(h, u->queue, &on_packet, u); /* queue id */
 	if (!qh) {
-		fprintf(stderr, "nfq_create_queue() with queue %d failed\n", 3);
+		fprintf(stderr, "nfq_create_queue() with queue %d failed\n", u->queue);
 		goto fail_queue;
 	}
 

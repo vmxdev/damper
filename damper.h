@@ -44,6 +44,8 @@ struct userdata
 	int socket;
 	struct sockaddr_in daddr;
 
+	int queue; /* nfqueue queue id */
+
 	struct mpacket *packets;
 	double *prioarray;
 	size_t qlen;
