@@ -256,19 +256,24 @@ sender_thread(void *arg)
 	int sendres;
 	size_t i, idx = 0;
 	double max = DBL_MIN;
-	uint64_t octets_per_second = 0, octets_allowed = 0;
-	struct timespec tp;
-	time_t tm = 0;
+	uint64_t octets_allowed = 0, limit;
+	struct timespec tprev, tcurr;
+	uint64_t tprev_ns, tcurr_ns;
 
+	clock_gettime(CLOCK_MONOTONIC, &tprev);
+	tprev_ns = (uint64_t)tprev.tv_sec * 1e9 + tprev.tv_nsec;
 	for (;;) {
-		clock_gettime(CLOCK_MONOTONIC, &tp);
-		if (tm != tp.tv_sec) {
-			tm = tp.tv_sec;
-			octets_per_second = 0;
-		}
+		clock_gettime(CLOCK_MONOTONIC, &tcurr);
+		tcurr_ns = (uint64_t)tcurr.tv_sec * 1e9 + tcurr.tv_nsec;
 
 		pthread_mutex_lock(&u->lock);
-		octets_allowed = u->limit - octets_per_second;
+		limit = u->limit;
+
+		if (tcurr_ns == tprev_ns) {
+			goto sleep_and_continue;
+		}
+
+		octets_allowed = ((tcurr_ns - tprev_ns) * limit) / 1e9;
 
 		/* search for packet with maximum priority */
 		max = DBL_MIN;
@@ -279,26 +284,37 @@ sender_thread(void *arg)
 			}
 		}
 
-		sendres = 0;
-		if ((max > DBL_MIN) && (octets_allowed >= u->packets[idx].size)) {
-			printf("max: %f, size: %u\n", max, u->packets[idx].size);
+		if (max == DBL_MIN) {
+			goto sleep_and_continue;
+		}
+
+		if (octets_allowed >= u->packets[idx].size) {
 			sendres = sendto(u->socket, u->packets[idx].packet, u->packets[idx].size, 0,
 				(struct sockaddr *)&(u->daddr), (socklen_t)sizeof(u->daddr));
 
-			u->prioarray[idx] = 0.0;
+			if (sendres < 0) {
+				fprintf(stderr, "sendto() failed, %s\n", strerror(errno));
+			}
+
+			u->prioarray[idx] = DBL_MIN;
+			tprev_ns = tcurr_ns;
+		} else {
+			goto sleep_and_continue;
 		}
 
 		pthread_mutex_unlock(&u->lock);
+		continue;
 
-		if (sendres < 0) {
-			fprintf(stderr, "sendto() failed, %s\n", strerror(errno));
-		} else {
-			octets_per_second += sendres;
-		}
+sleep_and_continue:
+		pthread_mutex_unlock(&u->lock);
 
-		if (max == DBL_MIN) {
-			usleep(100);
+		/* time needed to transmit about 10 bytes */
+		tcurr.tv_nsec += 10 * 1e9 / (limit + 1);
+		if (tcurr.tv_nsec >= 1e9) {
+			tcurr.tv_nsec -= 1e9;
+			tcurr.tv_sec++;
 		}
+		clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &tcurr, NULL);
 	}
 
 	return NULL;
@@ -320,11 +336,8 @@ add_to_queue(struct userdata *u, char *packet, int plen, double prio)
 		}
 	}
 
-	printf("min: %f\n", min);
-
 	/* and replace it with new packet */
 	if (min < prio) {
-		printf("added to queue %lu\n", idx);
 		u->prioarray[idx] = prio;
 		u->packets[idx].size = plen;
 		memcpy(u->packets[idx].packet, packet, plen);
@@ -367,8 +380,6 @@ on_packet(struct nfq_q_handle *qh,
 			if (weight < 0.0) break;
 		}
 	}
-
-	printf("got packet, mark: %u, weight: %f\n", mark, weight);
 
 	if (weight < 0) {
 		/* drop packets with with negative weight */
