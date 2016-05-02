@@ -377,8 +377,8 @@ on_packet(struct nfq_q_handle *qh,
 
 	/* calculate weight for each enabled module */
 	for (i=0; modules[i].name; i++) {
-		if (modules[i].metric && modules[i].enabled) {
-			weight *= (modules[i].metric)(modules[i].mptr, p, plen, mark);
+		if (modules[i].weight && modules[i].enabled) {
+			weight *= (modules[i].weight)(modules[i].mptr, p, plen, mark);
 			if (weight < 0.0) break;
 		}
 	}

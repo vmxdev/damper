@@ -67,7 +67,7 @@ struct userdata
 typedef void * (*module_init_func)    (struct userdata *);
 typedef void   (*module_conf_func)    (void *, char *param1, char *param2);
 typedef int    (*module_postconf_func)(void *);
-typedef double (*module_metric_func)  (void *, char *packet, int packetlen, int mark);
+typedef double (*module_weight_func)  (void *, char *packet, int packetlen, int mark);
 typedef void   (*module_done_func)    (void *);
 
 struct module_info
@@ -76,7 +76,7 @@ struct module_info
 	module_init_func init;
 	module_conf_func conf;
 	module_postconf_func postconf;
-	module_metric_func metric;
+	module_weight_func weight;
 	module_done_func done;
 
 	void *mptr;

@@ -132,7 +132,7 @@ inhibit_big_flows_free(void *arg)
 }
 
 double
-inhibit_big_flows_metric(void *arg, char *packet, int packetlen, int mark)
+inhibit_big_flows_weight(void *arg, char *packet, int packetlen, int mark)
 {
 	double m;
 	unsigned int i;
