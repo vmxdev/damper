@@ -29,7 +29,7 @@ struct damper_ip_header
 	uint8_t  ip_p;                  /* protocol */
 	uint16_t ip_sum;                /* checksum */
 	struct  in_addr ip_src,ip_dst;  /* source and dest address */
-};
+} __attribute__((packed));
 
 #define DAMPER_MAX_PACKET_SIZE 0xffff
 
@@ -50,7 +50,6 @@ struct userdata
 	double *prioarray;
 	size_t qlen;
 
-	int stat; /* enable statistics */
 	uint64_t limit;
 
 	int mark; /* reinjected packets mark */
@@ -60,7 +59,17 @@ struct userdata
 
 	pthread_t sender_tid;
 	pthread_mutex_t lock;
+
+	int stat; /* enable statistics */
+	char statdir[PATH_MAX];
+	FILE *statf; /* statistics file handle */
 };
+
+struct stat_info
+{
+	uint32_t packets_pass, octets_pass;
+	uint32_t packets_drop, octets_drop;
+} __attribute__((packed));
 
 /* modules */
 

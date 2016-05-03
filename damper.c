@@ -13,7 +13,7 @@
 
 
 /* convert string with optional suffixes 'k', 'm' or 'g' to bits per second */
-uint64_t
+static uint64_t
 str2bps(const char *l)
 {
 	char unit;
@@ -54,7 +54,7 @@ str2bps(const char *l)
 	return res * k / 8;
 }
 
-int
+static int
 config_read(struct userdata *u, char *confname)
 {
 	FILE *f;
@@ -65,6 +65,9 @@ config_read(struct userdata *u, char *confname)
 		fprintf(stderr, "Can't open file '%s'\n", confname);
 		goto fail_open;
 	}
+
+	u->stat = 0;
+	u->statdir[0] = '\0';
 
 	while (fgets(line, sizeof(line), f)) {
 		char cmd[LINE_MAX], p1[LINE_MAX], p2[LINE_MAX];
@@ -92,6 +95,8 @@ config_read(struct userdata *u, char *confname)
 			if (!strcmp(p1, "yes")) {
 				u->stat = 1;
 			}
+		} else if (!strcmp(cmd, "statdir")) {
+			strncpy(u->statdir, p1, PATH_MAX);
 		} else if (!strcmp(cmd, "packets")) {
 			u->qlen = atoi(p1);
 		} else {
@@ -112,7 +117,7 @@ fail_open:
 	return 0;
 }
 
-struct userdata *
+static struct userdata *
 userdata_init(char *confname)
 {
 	struct userdata *u;
@@ -141,6 +146,26 @@ userdata_init(char *confname)
 
 	if (u->limit == 0) {
 		fprintf(stderr, "Something is wrong with limit, all traffic will be blocked\n");
+	}
+
+	/* setup statistics */
+	if (u->stat) {
+		if (u->statdir[0] == '\0') {
+			fprintf(stderr, "Directory for statistics is not set\n");
+			u->stat = 0;
+		} else {
+			char stat_path[PATH_MAX];
+
+			snprintf(stat_path, PATH_MAX, "%s/stat.dat", u->statdir);
+			u->statf = fopen(stat_path, "r+");
+			if (!u->statf) {
+				u->statf = fopen(stat_path, "w+");
+				if (!u->statf) {
+					fprintf(stderr, "Can't open file '%s'\n", stat_path);
+					u->stat = 0;
+				}
+			}
+		}
 	}
 
 	/* reserve memory for packets in queue */
@@ -234,7 +259,7 @@ fail_create:
 	return NULL;
 }
 
-void
+static void
 userdata_destroy(struct userdata *u)
 {
 	size_t i;
@@ -245,13 +270,16 @@ userdata_destroy(struct userdata *u)
 		}
 	}
 
+	if (u->stat) {
+		fclose(u->statf);
+	}
 	close(u->socket);
 	free(u->prioarray);
 	free(u->packets);
 	free(u);
 }
 
-void *
+static void *
 sender_thread(void *arg)
 {
 	struct userdata *u = arg;
@@ -323,7 +351,7 @@ sleep_and_continue:
 }
 
 
-void
+static void
 add_to_queue(struct userdata *u, char *packet, int plen, double prio)
 {
 	size_t i, idx = 0;
@@ -468,6 +496,8 @@ fail_queue:
 fail_bind:
 fail_unbind:
 	nfq_close(h);
+
+	userdata_destroy(u);
 
 	return r;
 }
