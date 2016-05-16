@@ -54,6 +54,48 @@ str2bps(const char *l)
 	return res * k / 8;
 }
 
+static void
+stat_init(struct userdata *u)
+{
+	char stat_path[PATH_MAX];
+	time_t t, tf;
+
+	if (u->statdir[0] == '\0') {
+		fprintf(stderr, "Directory for statistics is not set\n");
+		goto fail;
+	}
+
+	t = time(NULL);
+	if (t == ((time_t) -1)) {
+		fprintf(stderr, "time() failed\n");
+		goto fail;
+	}
+
+	snprintf(stat_path, PATH_MAX, "%s/stat.dat", u->statdir);
+	u->statf = fopen(stat_path, "r+");
+	if (u->statf) {
+		size_t s;
+
+		s = fread(&tf, 1, sizeof(time_t), u->statf);
+		if (s < sizeof(time_t)) {
+			fprintf(stderr, "Incorrect statistics file '%s'\n", stat_path);
+			fclose(u->statf);
+			goto fail;
+		}
+	} else {
+		u->statf = fopen(stat_path, "w+");
+		if (!u->statf) {
+			fprintf(stderr, "Can't open file '%s'\n", stat_path);
+			goto fail;
+		}
+		fwrite(&t, 1, sizeof(time_t), u->statf);
+	}
+
+	
+fail:
+	u->stat = 0;
+}
+
 static int
 config_read(struct userdata *u, char *confname)
 {
@@ -150,22 +192,7 @@ userdata_init(char *confname)
 
 	/* setup statistics */
 	if (u->stat) {
-		if (u->statdir[0] == '\0') {
-			fprintf(stderr, "Directory for statistics is not set\n");
-			u->stat = 0;
-		} else {
-			char stat_path[PATH_MAX];
-
-			snprintf(stat_path, PATH_MAX, "%s/stat.dat", u->statdir);
-			u->statf = fopen(stat_path, "r+");
-			if (!u->statf) {
-				u->statf = fopen(stat_path, "w+");
-				if (!u->statf) {
-					fprintf(stderr, "Can't open file '%s'\n", stat_path);
-					u->stat = 0;
-				}
-			}
-		}
+		stat_init(u);
 	}
 
 	/* reserve memory for packets in queue */
