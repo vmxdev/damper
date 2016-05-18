@@ -91,6 +91,7 @@ stat_init(struct userdata *u)
 		fwrite(&t, 1, sizeof(time_t), u->statf);
 	}
 
+	return;
 	
 fail:
 	u->stat = 0;
