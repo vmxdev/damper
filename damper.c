@@ -254,6 +254,8 @@ userdata_init(char *confname)
 
 	/* init mutex */
 	pthread_mutex_init(&u->lock, NULL);
+	/* and condition variable */
+	pthread_cond_init(&u->cond, NULL);
 
 	/* configuration done, notify modules */
 	for (i=0; modules[i].name; i++) {
@@ -298,6 +300,9 @@ userdata_destroy(struct userdata *u)
 		}
 	}
 
+	pthread_cond_destroy(&u->cond);
+	pthread_mutex_destroy(&u->lock);
+
 	if (u->stat) {
 		fclose(u->statf);
 	}
@@ -327,10 +332,6 @@ sender_thread(void *arg)
 		pthread_mutex_lock(&u->lock);
 		limit = u->limit;
 
-		if (tcurr_ns == tprev_ns) {
-			goto sleep_and_continue;
-		}
-
 		octets_allowed = ((tcurr_ns - tprev_ns) * limit) / 1e9;
 
 		/* search for packet with maximum priority */
@@ -343,7 +344,7 @@ sender_thread(void *arg)
 		}
 
 		if (max == DBL_MIN) {
-			goto sleep_and_continue;
+			goto wait_data;
 		}
 
 		if (octets_allowed >= u->packets[idx].size) {
@@ -356,23 +357,17 @@ sender_thread(void *arg)
 
 			u->prioarray[idx] = DBL_MIN;
 			tprev_ns = tcurr_ns;
+			fprintf(stderr, ".");
 		} else {
-			goto sleep_and_continue;
+			goto wait_data;
 		}
 
 		pthread_mutex_unlock(&u->lock);
 		continue;
 
-sleep_and_continue:
+wait_data:
+		pthread_cond_wait(&u->cond, &u->lock);
 		pthread_mutex_unlock(&u->lock);
-
-		/* time needed to transmit about 10 bytes */
-		tcurr.tv_nsec += 10 * 1e9 / (limit + 1);
-		if (tcurr.tv_nsec >= 1e9) {
-			tcurr.tv_nsec -= 1e9;
-			tcurr.tv_sec++;
-		}
-		clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &tcurr, NULL);
 	}
 
 	return NULL;
@@ -400,6 +395,10 @@ add_to_queue(struct userdata *u, char *packet, int plen, double prio)
 		u->packets[idx].size = plen;
 		memcpy(u->packets[idx].packet, packet, plen);
 	}
+
+	/* notify sender thread that we have data */
+	pthread_cond_signal(&u->cond);
+
 	pthread_mutex_unlock(&u->lock);
 }
 

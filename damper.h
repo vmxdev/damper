@@ -59,6 +59,7 @@ struct userdata
 
 	pthread_t sender_tid;
 	pthread_mutex_t lock;
+	pthread_cond_t cond;
 
 	int stat; /* enable statistics */
 	char statdir[PATH_MAX];
