@@ -58,16 +58,9 @@ static void
 stat_init(struct userdata *u)
 {
 	char stat_path[PATH_MAX];
-	time_t t, tf;
 
 	if (u->statdir[0] == '\0') {
 		fprintf(stderr, "Directory for statistics is not set\n");
-		goto fail;
-	}
-
-	t = time(NULL);
-	if (t == ((time_t) -1)) {
-		fprintf(stderr, "time() failed\n");
 		goto fail;
 	}
 
@@ -76,25 +69,72 @@ stat_init(struct userdata *u)
 	if (u->statf) {
 		size_t s;
 
-		s = fread(&tf, 1, sizeof(time_t), u->statf);
+		s = fread(&u->stat_start, 1, sizeof(time_t), u->statf);
 		if (s < sizeof(time_t)) {
 			fprintf(stderr, "Incorrect statistics file '%s'\n", stat_path);
-			fclose(u->statf);
-			goto fail;
+			goto fail_close;
 		}
 	} else {
+		/* create new file */
 		u->statf = fopen(stat_path, "w+");
 		if (!u->statf) {
 			fprintf(stderr, "Can't open file '%s'\n", stat_path);
 			goto fail;
 		}
-		fwrite(&t, 1, sizeof(time_t), u->statf);
+		u->stat_start = time(NULL);
+		if (u->stat_start == ((time_t) -1)) {
+			fprintf(stderr, "time() failed\n");
+			goto fail_close;
+		}
+		fwrite(&u->stat_start, 1, sizeof(time_t), u->statf);
 	}
+	memset(&u->stat_info, 0, sizeof(u->stat_info));
 
+	u->curr_timestamp = 0;
 	return;
-	
+
+fail_close:
+	fclose(u->statf);
 fail:
 	u->stat = 0;
+}
+
+static void
+stat_write(struct userdata *u, struct nfq_data *nfad)
+{
+	struct timeval tv;
+	struct stat_info old_stat;
+	long int off;
+	size_t rr;
+
+	if (!nfq_get_timestamp(nfad, &tv)) {
+		return;
+	}
+
+	if (tv.tv_sec == u->curr_timestamp) {
+		return;
+	}
+
+	if (tv.tv_sec < u->stat_start) {
+		return;
+	}
+
+
+	off = (tv.tv_sec - u->stat_start) * sizeof(struct stat_info) + sizeof(time_t);
+	fseek(u->statf, off, SEEK_SET);
+	rr = fread(&old_stat, 1, sizeof(struct stat_info), u->statf);
+	if (rr == sizeof(struct stat_info)) {
+		u->stat_info.packets_pass += old_stat.packets_pass;
+		u->stat_info.octets_pass += old_stat.octets_pass;
+		u->stat_info.packets_drop += old_stat.packets_drop;
+		u->stat_info.octets_drop += old_stat.octets_drop;
+	}
+
+	fseek(u->statf, off, SEEK_SET);
+	fwrite(&u->stat_info, 1, sizeof(struct stat_info), u->statf);
+	memset(&u->stat_info, 0, sizeof(u->stat_info));
+
+	u->curr_timestamp = tv.tv_sec;
 }
 
 static int
@@ -315,24 +355,39 @@ userdata_destroy(struct userdata *u)
 static void *
 sender_thread(void *arg)
 {
+#define BILLION ((uint64_t)1000000000)
+#define ROUNDUP(N, M) (((N + M - 1) / M) * M)
+
 	struct userdata *u = arg;
 	int sendres;
 	size_t i, idx = 0;
 	double max = DBL_MIN;
-	uint64_t octets_allowed = 0, limit;
-	struct timespec tprev, tcurr;
-	uint64_t tprev_ns, tcurr_ns;
+	uint64_t octets_allowed, octets_passed = 0, limit;
+	uint64_t tcurr_ns, tprev_ns = 0;
+	uint64_t delta_t = 100;
 
-	clock_gettime(CLOCK_MONOTONIC, &tprev);
-	tprev_ns = (uint64_t)tprev.tv_sec * 1e9 + tprev.tv_nsec;
 	for (;;) {
-		clock_gettime(CLOCK_MONOTONIC, &tcurr);
-		tcurr_ns = (uint64_t)tcurr.tv_sec * 1e9 + tcurr.tv_nsec;
+		struct timespec ts;
+
+		clock_gettime(CLOCK_MONOTONIC, &ts);
+		tcurr_ns = ts.tv_sec * BILLION + ts.tv_nsec;
+		tcurr_ns = ROUNDUP(tcurr_ns, delta_t);
+
+		if (tcurr_ns != tprev_ns) {
+			octets_passed = 0;
+			tprev_ns = tcurr_ns;
+		}
 
 		pthread_mutex_lock(&u->lock);
 		limit = u->limit;
 
-		octets_allowed = ((tcurr_ns - tprev_ns) * limit) / 1e9;
+		delta_t = DAMPER_MAX_PACKET_SIZE * BILLION / limit;
+		if (delta_t > BILLION) {
+			delta_t = BILLION;
+		} else if (delta_t < 100) {
+			delta_t = 100;
+		}
+		octets_allowed = (limit * delta_t / BILLION) - octets_passed;
 
 		/* search for packet with maximum priority */
 		max = DBL_MIN;
@@ -356,8 +411,7 @@ sender_thread(void *arg)
 			}
 
 			u->prioarray[idx] = DBL_MIN;
-			tprev_ns = tcurr_ns;
-			fprintf(stderr, ".");
+			octets_passed += sendres;
 		} else {
 			goto wait_data;
 		}
@@ -371,6 +425,9 @@ wait_data:
 	}
 
 	return NULL;
+
+#undef ROUNDUP
+#undef BILLION
 }
 
 
@@ -441,6 +498,11 @@ on_packet(struct nfq_q_handle *qh,
 	if (weight < 0) {
 		/* drop packets with with negative weight */
 		/* statistics */
+		if (u->stat) {
+			u->stat_info.packets_drop += 1;
+			u->stat_info.octets_drop += plen;
+			stat_write(u, nfad);
+		}
 	} else {
 		/* add to queue with positive weight */
 		if (u->dscp != 0) {
@@ -449,6 +511,12 @@ on_packet(struct nfq_q_handle *qh,
 		}
 
 		add_to_queue(u, p, plen, weight);
+		/* statistics */
+		if (u->stat) {
+			u->stat_info.packets_pass += 1;
+			u->stat_info.octets_pass+= plen;
+			stat_write(u, nfad);
+		}
 	}
 
 	/* drop packet */

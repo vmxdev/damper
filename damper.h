@@ -39,6 +39,13 @@ struct mpacket
 	char packet[DAMPER_MAX_PACKET_SIZE];
 };
 
+
+struct stat_info
+{
+	uint32_t packets_pass, octets_pass;
+	uint32_t packets_drop, octets_drop;
+} __attribute__((packed));
+
 struct userdata
 {
 	int socket;
@@ -64,13 +71,10 @@ struct userdata
 	int stat; /* enable statistics */
 	char statdir[PATH_MAX];
 	FILE *statf; /* statistics file handle */
+	struct stat_info stat_info;
+	time_t stat_start, curr_timestamp;
 };
 
-struct stat_info
-{
-	uint32_t packets_pass, octets_pass;
-	uint32_t packets_drop, octets_drop;
-} __attribute__((packed));
 
 /* modules */
 
