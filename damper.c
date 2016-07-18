@@ -102,25 +102,26 @@ fail:
 static void
 stat_write(struct userdata *u, struct nfq_data *nfad)
 {
-	struct timeval tv;
+	time_t t;
 	struct stat_info old_stat;
 	long int off;
 	size_t rr;
 
-	if (!nfq_get_timestamp(nfad, &tv)) {
+	/*
+	 nfq_get_timestamp don't work with some (at least locally generated) packets, so using time()
+	*/
+	t = time(NULL);
+
+	if (t == u->curr_timestamp) {
 		return;
 	}
 
-	if (tv.tv_sec == u->curr_timestamp) {
-		return;
-	}
-
-	if (tv.tv_sec < u->stat_start) {
+	if (t < u->stat_start) {
 		return;
 	}
 
 
-	off = (tv.tv_sec - u->stat_start) * sizeof(struct stat_info) + sizeof(time_t);
+	off = (t - u->stat_start) * sizeof(struct stat_info) + sizeof(time_t);
 	fseek(u->statf, off, SEEK_SET);
 	rr = fread(&old_stat, 1, sizeof(struct stat_info), u->statf);
 	if (rr == sizeof(struct stat_info)) {
@@ -134,7 +135,7 @@ stat_write(struct userdata *u, struct nfq_data *nfad)
 	fwrite(&u->stat_info, 1, sizeof(struct stat_info), u->statf);
 	memset(&u->stat_info, 0, sizeof(u->stat_info));
 
-	u->curr_timestamp = tv.tv_sec;
+	u->curr_timestamp = t;
 }
 
 static int
