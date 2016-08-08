@@ -1,1 +1,190 @@
-/var/www/damper-stat.html
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Damper statistics</title>
+<link rel="stylesheet" href="jquery-ui/jquery-ui.min.css">
+<script src="jquery-3.1.0.min.js"></script>
+<script src="jquery-ui/jquery-ui.min.js"></script>
+<style>
+#chart {
+	margin: 20px;
+}
+</style>
+<script>
+	function epoch2datetime(epoch) {
+		var d = new Date(epoch * 1000);
+		var dt = ("0" + d.getDate()).slice(-2) + '.'
+			+ ("0" + (d.getMonth() + 1)).slice(-2) + '.'
+			+ d.getFullYear().toString()
+			+ "  "
+			+ ("0" + d.getHours()).slice(-2) + ":"
+			+ ("0" + d.getMinutes()).slice(-2) + ":"
+			+ ("0" + d.getSeconds()).slice(-2);
+		return dt;
+	}
+
+	function human_readable_speed(speed) {
+		var KILO = 1000;
+		var MEGA = KILO * KILO;
+		var GIGA = KILO * KILO * KILO;
+		var hrspeed;
+
+		if (speed > GIGA) {
+			hrspeed = +(speed / GIGA).toFixed(1) + "G";
+		} else if (speed > MEGA) {
+			hrspeed = +(speed / MEGA).toFixed(1) + "M";
+		} else if (speed > KILO) {
+			hrspeed = +(speed / KILO).toFixed(1) + "K";
+		} else {
+			hrspeed = +speed.toFixed(2);
+		}
+
+		return hrspeed;
+	}
+
+	var canvas, ctx, image, wlabel_h;
+
+	function initchart() {
+		canvas = $("#chart-cnv");
+
+		ctx = canvas[0].getContext("2d");
+		/* FIXME: check if canvas not supported */
+
+		wlabel_h = ctx.measureText("999WW").width + 10;
+
+		image = new Image();
+		image.onload = function() {
+			ctx.drawImage(image, wlabel_h - 15, 0);
+		};
+	}
+
+	function loadchart() {
+		var w = 1000;
+		var h = 200;
+		window.time_start = Math.round(window.time_start);
+		window.time_end = Math.round(window.time_end);
+
+		var imgparams = {};
+		imgparams["w"] = w;
+		imgparams["h"] = h;
+		imgparams["start"] = window.time_start;
+		imgparams["end"] = window.time_end;
+
+		$.get( "damper-img", imgparams )
+			.done(function(data) {
+				var start_str = epoch2datetime(data.start);
+				var hlabel_w = ctx.measureText(start_str).width + 10;
+
+				canvas.attr("width", imgparams["w"] + wlabel_h);
+				canvas.attr("height", imgparams["h"] + hlabel_w);
+
+				/* draw speed labels */
+				var LABEL_HEIGHT = 20;
+				var data_labels_k = (h / LABEL_HEIGHT) / (h / LABEL_HEIGHT - 1);
+				for (var hi=0; hi<h; hi+=LABEL_HEIGHT) {
+					var dlabel = data.max - data.max * hi / h * data_labels_k;
+					dlabel = human_readable_speed(dlabel);
+					ctx.fillText(dlabel, 0, hi + 15);
+				}
+
+				/* time labels */
+				ctx.save();
+				ctx.translate(0, 0);
+				ctx.rotate(-Math.PI/2);
+				var timelen = parseInt(data.end) - data.start;
+				for (wi=0; wi<=w; wi+=40) {
+					var n = Math.round(parseInt(data.start) + wi * timelen / imgparams["w"]);
+					var dstr = epoch2datetime(n);
+					ctx.fillText(dstr, -imgparams["h"] - hlabel_w, wlabel_h + wi - 10);
+				}
+				ctx.restore();
+
+				/* chart */
+				image.src = "data:image/png;base64," + data.img;
+
+				ctx.drawImage(image, wlabel_h - 15, 0);
+
+				window.time_start = data.start;
+				window.time_end = data.end;
+
+				window.chart_w = imgparams["w"];
+			});
+	}
+
+	$(function() {
+		$( "input" ).checkboxradio({
+			icon: false
+		});
+		$( "fieldset" ).controlgroup();
+
+		window.time_start = 0;
+		window.time_end = 0;
+
+		initchart();
+
+		/* handle mouse scroll on chart */
+		$("#chart").bind('mousewheel DOMMouseScroll', function(event) {
+			var k = (window.time_end - window.time_start) * 0.1;
+			if (k < 1) {
+				k = 1;
+			}
+			if (event.originalEvent.wheelDelta > 0 || event.originalEvent.detail < 0) {
+				// scroll up
+				window.time_start = parseInt(window.time_start) + k;
+				window.time_end   = parseInt(window.time_end)   - k;
+				loadchart();
+			} else {
+				// scroll down
+				window.time_start = parseInt(window.time_start) - k;;
+				window.time_end   = parseInt(window.time_end)   + k;
+				loadchart();
+			}
+		});
+
+		/* chart dragging */
+
+		$("#chart").on("mousedown", function(e) {
+			$(this).data('p0', { x: e.pageX, y: e.pageY });
+		}).on("mouseup", function(e) {
+			var p0 = $(this).data('p0'),
+			p1 = { x: e.pageX, y: e.pageY },
+			d = p1.x - p0.x;
+			if (window.chart_w != 0) {
+				var dt = d * (window.time_end - window.time_start) / window.chart_w;
+				window.time_start = parseInt(window.time_start) - dt;
+				window.time_end   = parseInt(window.time_end) - dt;
+			}
+			loadchart();
+		});
+
+		loadchart();
+	});
+</script>
+</head>
+
+<body>
+  <fieldset>
+    <legend>Packets/bytes</legend>
+    <label for="radio-b">Bytes</label>
+    <input type="radio" name="radio-pb" id="radio-b" checked>
+    <label for="radio-p">Packets</label>
+    <input type="radio" name="radio-pb" id="radio-p">
+  </fieldset>
+
+  <fieldset>
+    <legend>Display</legend>
+    <label for="radio-min">Min</label>
+    <input type="radio" name="radio-disp" id="radio-min" checked>
+    <label for="radio-max">Max</label>
+    <input type="radio" name="radio-disp" id="radio-max">
+    <label for="radio-avg">Avg</label>
+    <input type="radio" name="radio-disp" id="radio-avg">
+  </fieldset>
+
+<div id="chart">
+ <canvas id="chart-cnv">
+</div>
+---
+</body>
+</html>
