@@ -6,7 +6,7 @@ struct flow
 
 struct inhibit_big_flows
 {
-	struct flow *rescent_flows;
+	struct flow *recent_flows;
 	int nflows;
 	int currflow;
 	uint64_t flow_octets;
@@ -45,7 +45,7 @@ inhibit_big_flows_conf(void *arg, char *param1, char *param2)
 {
 	struct inhibit_big_flows *data = arg;
 
-	if (!strcmp(param1, "nrescent")) {
+	if (!strcmp(param1, "nrecent")) {
 		data->nflows = atoi(param2);
 	} else if (!strcmp(param1, "debug")) {
 		data->debug = atoi(param2);
@@ -79,10 +79,10 @@ inhibit_big_flows_debug(void *arg)
 		for (i=0; i<data->nflows; i++) {
 			struct in_addr saddr, daddr;
 
-			saddr.s_addr = data->rescent_flows[i].saddr;
-			daddr.s_addr = data->rescent_flows[i].daddr;
+			saddr.s_addr = data->recent_flows[i].saddr;
+			daddr.s_addr = data->recent_flows[i].daddr;
 			fprintf(f, "%d: [%s => ", i, inet_ntoa(saddr));
-			fprintf(f, "%s] %lu\n", inet_ntoa(daddr), data->rescent_flows[i].octets);
+			fprintf(f, "%s] %lu\n", inet_ntoa(daddr), data->recent_flows[i].octets);
 		}
 
 		pthread_mutex_unlock(&data->lock);
@@ -99,18 +99,18 @@ inhibit_big_flows_postconf(void *arg)
 	struct inhibit_big_flows *data = arg;
 
 	if (data->nflows < 1) {
-		fprintf(stderr, "Module 'inhibit_big_flows': incorrect value %d for number of rescent flows\n",
+		fprintf(stderr, "Module 'inhibit_big_flows': incorrect value %d for number of recent flows\n",
 			data->nflows);
 		goto fail;
 	}
 
-	/* create array of rescent flows */
-	data->rescent_flows = malloc(data->nflows * sizeof(struct flow));
-	if (!data->rescent_flows) {
-		fprintf(stderr, "malloc() failed for %d rescent flows\n", data->nflows);
+	/* create array of recent flows */
+	data->recent_flows = malloc(data->nflows * sizeof(struct flow));
+	if (!data->recent_flows) {
+		fprintf(stderr, "malloc() failed for %d recent flows\n", data->nflows);
 		goto fail;
 	}
-	memset(data->rescent_flows, 0, data->nflows * sizeof(struct flow));
+	memset(data->recent_flows, 0, data->nflows * sizeof(struct flow));
 
 	if (data->debug) {
 		pthread_create(&data->debug_tid, NULL, &inhibit_big_flows_debug, data);
@@ -127,7 +127,7 @@ inhibit_big_flows_free(void *arg)
 {
 	struct inhibit_big_flows *data = arg;
 
-	free(data->rescent_flows);
+	free(data->recent_flows);
 	free(data);
 }
 
@@ -150,8 +150,8 @@ inhibit_big_flows_weight(void *arg, char *packet, int packetlen, int mark)
 	}
 
 	for (i=0; i<data->nflows; i++) {
-		if ((saddr == data->rescent_flows[i].saddr) && (daddr == data->rescent_flows[i].daddr)) {
-			data->rescent_flows[i].octets += packetlen;
+		if ((saddr == data->recent_flows[i].saddr) && (daddr == data->recent_flows[i].daddr)) {
+			data->recent_flows[i].octets += packetlen;
 			found = 1;
 			break;
 		}
@@ -160,11 +160,11 @@ inhibit_big_flows_weight(void *arg, char *packet, int packetlen, int mark)
 	if (!found) {
 		i = data->currflow;
 
-		data->flow_octets -= data->rescent_flows[i].octets;
+		data->flow_octets -= data->recent_flows[i].octets;
 
-		data->rescent_flows[i].saddr = saddr;
-		data->rescent_flows[i].daddr = daddr;
-		data->rescent_flows[i].octets = packetlen;
+		data->recent_flows[i].saddr = saddr;
+		data->recent_flows[i].daddr = daddr;
+		data->recent_flows[i].octets = packetlen;
 
 		data->currflow++;
 		if (data->currflow >= data->nflows) {
@@ -174,7 +174,7 @@ inhibit_big_flows_weight(void *arg, char *packet, int packetlen, int mark)
 
 	data->flow_octets += packetlen;
 
-	m = (double)data->rescent_flows[i].octets / data->flow_octets;
+	m = (double)data->recent_flows[i].octets / data->flow_octets;
 
 	if (data->debug) {
 		pthread_mutex_unlock(&data->lock);
