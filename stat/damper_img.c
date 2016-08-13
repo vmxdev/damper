@@ -26,9 +26,10 @@ struct scgi_thread_arg
 /* requested parameters */
 struct request_params
 {
-	int w, h; /* image width and height */
+	int w, h;          /* image width and height */
 	time_t start, end; /* start and end time of chart */
-	int pb; /* packets or bytes, if zero display packets in chart */
+	int pb;            /* packets or bytes, if zero display packets in chart */
+	int apx;           /* approximation */
 };
 
 /* A coloured pixel */
@@ -263,27 +264,79 @@ draw_bg(bitmap_t *bmp)
 	}
 }
 
+/* calculate height of row */
+static void
+calc_line_h(struct stat_info *info, int *lines, size_t i, struct request_params *p, int n)
+{
+/* hmm */
+#define SETMAX(x, y) x = (((x) > (y)) ? (x) : (y))
+#define SETMIN(x, y) if (x != 0) { x = (((x) < (y)) ? (x) : (y)); } else { x = y; }
+/* iterative mean, http://www.heikohoffmann.de/htmlthesis/node134.html */
+#define SETAVG(x, y, t) x = (x + (((int64_t)y - x) / (t + 1)))
+
+	if (p->pb) {
+		/* display octets */
+		switch (p->apx) {
+			case 1: /* min */
+				SETMIN (lines[i*2 + 0],  info->octets_pass);
+				SETMIN (lines[i*2 + 1],  info->octets_drop);
+				break;
+			case 2: /* avg */
+				SETAVG (lines[i*2 + 0],  info->octets_pass, n);
+				SETAVG (lines[i*2 + 1],  info->octets_drop, n);
+				break;
+			case 0: /* max */
+			default:
+				SETMAX (lines[i*2 + 0],  info->octets_pass);
+				SETMAX (lines[i*2 + 1],  info->octets_drop);
+				break;
+		}
+	} else {
+		/* or display packets */
+		switch (p->apx) {
+			case 1:
+				SETMIN (lines[i*2 + 0],  info->packets_pass);
+				SETMIN (lines[i*2 + 1],  info->packets_drop);
+				break;
+			case 2:
+				SETAVG (lines[i*2 + 0],  info->packets_pass, n);
+				SETAVG (lines[i*2 + 1],  info->packets_drop, n);
+				break;
+			case 0:
+			default:
+				SETMAX (lines[i*2 + 0],  info->packets_pass);
+				SETMAX (lines[i*2 + 1],  info->packets_drop);
+				break;
+		}
+	}
+#undef SETAVG
+#undef SETMIN
+#undef SETMAX
+}
+
 /* draw chart */
-struct response *
+static struct response *
 build_chart(struct request_params *p)
 {
 	bitmap_t rep;
 	FILE *f;       /* statistics file */
 	time_t tstart; /* statistics start time */
 	size_t s;
-	struct stat_info *lines, max;
+	int *lines, max_h;
 	size_t i, n;   /* n - number of records in file */
 	struct stat st;
 	struct membuf mempng;  /* png in memory */
 	struct response *r = NULL;
 
-	lines = calloc(sizeof(struct stat_info), p->w);
+	lines = calloc(2 * sizeof(int), p->w);
 	if (!lines) {
 		goto fail;
 	}
 
+	/* FIXME: path from command line */
 	f = fopen("/var/lib/damper/stat.dat", "r");
 	if (!f) {
+		fprintf(stderr, "Can't open stat file\n");
 		goto fail_freelines;
 	}
 
@@ -297,7 +350,7 @@ build_chart(struct request_params *p)
 		goto fail_close;
 	}
 
-	max.octets_pass = max.octets_drop = max.packets_pass = max.packets_drop = 0;
+	max_h = 0;
 
 	/* read header */
 	s = fread(&tstart, 1, sizeof(time_t), f);
@@ -305,7 +358,7 @@ build_chart(struct request_params *p)
 		goto fail_close;
 	}
 
-	/* Create an image. */
+	/* create an image */
 	rep.width = p->w;
 	rep.height = p->h;
 
@@ -319,7 +372,7 @@ build_chart(struct request_params *p)
 		p->end = p->start + n;
 	}
 
-	/* prepare chart, get height for each row */
+	/* prepare chart, get heights (passed and dropped) of each row */
 	for (i=0; i<p->w; i++) {
 		int64_t idx_start, idx_end, idx;
 		struct stat_info info;
@@ -337,57 +390,37 @@ build_chart(struct request_params *p)
 				continue;
 			}
 
-#define LINE(PB) \
-	if (info.PB ## _pass > lines[i].PB ## _pass) { lines[i].PB ## _pass = info.PB ## _pass; } \
-	if (info.PB ## _drop > lines[i].PB ## _drop) { lines[i].PB ## _drop = info.PB ## _drop; }
-
-#define LINEM(PB) \
-	if (info.PB ## _pass > max.PB ## _pass) { max.PB ## _pass = info.PB ## _pass; }\
-	if (info.PB ## _drop > max.PB ## _drop) { max.PB ## _drop = info.PB ## _drop; }
-
-			if (p->pb) {
-				LINE(octets)
-				LINEM(octets)
-			} else {
-				LINE(packets)
-				LINEM(packets)
-			}
-#undef LINEM
-#undef LINE
+			calc_line_h(&info, lines, i, p, idx - idx_start);
 		}
+		if (max_h < lines[i*2 + 0]) max_h = lines[i*2 + 0];
+		if (max_h < lines[i*2 + 1]) max_h = lines[i*2 + 1];
 	}
 
 	draw_bg(&rep);
 
 	/* draw chart */
 	for (i=0; i<p->w; i++) {
-		int line_h, j;
+		int line_h_p, line_h_d, j;
 
-#define LINE_H(PB) if (max.PB ## _pass > 0) { line_h = p->h * lines[i].PB ## _pass / max.PB ## _pass; }\
-	else { line_h = 0; }
-
-		if (p->pb) {
-			LINE_H(octets)
+		if (max_h > 0) {
+			line_h_p = p->h * lines[i * 2 + 0] / max_h;
+			line_h_d = p->h * lines[i * 2 + 1] / max_h;
 		} else {
-			LINE_H(packets)
+			line_h_p = line_h_d = 0;
 		}
 
-#undef LINE_H
-		for (j=0; j<line_h; j++) {
+		for (j=0; j<line_h_p; j++) {
 			pixel_t *pixel = rep.pixels + p->w * (p->h - j - 1) + i;
 			pixel->red = 0;
 			pixel->green = 200;
 			pixel->blue = 0;
 		}
 
-		if (max.octets_drop > 0) {
-			line_h = p->h * lines[i].octets_drop / max.octets_drop;
-			for (j=0; j<line_h; j++) {
-				pixel_t *pixel = rep.pixels + p->w * (p->h - j - 1) + i;
-				pixel->red = 100;
-				pixel->green = 50;
-				pixel->blue = 0;
-			}
+		for (j=0; j<line_h_d; j++) {
+			pixel_t *pixel = rep.pixels + p->w * (p->h - j - 1) + i;
+			pixel->red = 100;
+			pixel->green = 50;
+			pixel->blue = 0;
 		}
 	}
 
@@ -410,14 +443,11 @@ build_chart(struct request_params *p)
 	r->start = p->start;
 	r->end = p->end;
 
-	r->max = p->pb ? max.octets_pass : max.packets_pass;
+	r->max = max_h;
 
 fail_resp:
 	/* free raw image */
 	free(mempng.ptr);
-
-/*	printf("max: %u/%u\n", max.octets_pass, max.octets_drop);*/
-
 
 	free(rep.pixels);
 fail_close:
@@ -464,6 +494,8 @@ parse_params(struct request_params *p, char *q)
 			p->end = atol(ptr + 4);
 		} else if (memcmp(ptr, "pb=", 3) == 0) {
 			p->pb = atoi(ptr + 3);
+		} else if (memcmp(ptr, "apx=", 4) == 0) {
+			p->apx = atoi(ptr + 4);
 		}
 		ptr = last ? end : end + 1;
 	}
@@ -505,6 +537,8 @@ scgi_thread(void *arg)
 	ptr = start;
 	stop_parse = 0;
 	params.w = params.h = 0;
+	params.pb  = 1; /* bytes */
+	params.apx = 0; /* max */
 
 	for (;;) {
 		for (i=0; ; i++) {

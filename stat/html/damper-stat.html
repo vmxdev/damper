@@ -71,7 +71,8 @@
 		imgparams["h"] = h;
 		imgparams["start"] = window.time_start;
 		imgparams["end"] = window.time_end;
-		imgparams["pb"] = $("input:radio[name ='radio-pb']:checked").val();
+		imgparams["pb"]  = $("input:radio[name ='radio-pb']:checked").val();
+		imgparams["apx"] = $("input:radio[name ='radio-apx']:checked").val();
 
 		$.get( "damper-img", imgparams )
 			.done(function(data) {
@@ -114,6 +115,20 @@
 			});
 	}
 
+	function toggle_autoupdate() {
+		var REFRESH = 3000; /* 3 seconds */
+		var au = $("input:radio[name ='radio-au']:checked").val();
+		if (au == "1") {
+			window.autimer = setInterval(function() {
+				window.time_start = parseInt(window.time_start) + REFRESH / 1000;
+				window.time_end   = parseInt(window.time_end) + REFRESH / 1000;
+				loadchart();
+			}, REFRESH);
+		} else {
+			clearInterval(window.autimer);
+		}
+	}
+
 	$(function() {
 		$( "input" ).checkboxradio({
 			icon: false
@@ -145,13 +160,15 @@
 		});
 
 		/* chart dragging */
-
 		$("#chart").on("mousedown", function(e) {
 			$(this).data('p0', { x: e.pageX, y: e.pageY });
 		}).on("mouseup", function(e) {
 			var p0 = $(this).data('p0'),
 			p1 = { x: e.pageX, y: e.pageY },
 			d = p1.x - p0.x;
+			if (d < 3) {
+				/* maybe double-click? */
+			}
 			if (window.chart_w != 0) {
 				var dt = d * (window.time_end - window.time_start) / window.chart_w;
 				window.time_start = parseInt(window.time_start) - dt;
@@ -160,12 +177,30 @@
 			loadchart();
 		});
 
+		/* reset position on double-click */
+		$("#chart" ).dblclick(function() {
+			window.time_start = 0;
+			window.time_end = 0;
+			loadchart();
+		});
+
 		/* show bytes or packets */
 		$('input[type=radio][name=radio-pb]').on('change', function() {
 			loadchart();
 		});
 
+		/* approximation */
+		$('input[type=radio][name=radio-apx]').on('change', function() {
+			loadchart();
+		});
+
+		/* autoupdate */
+		$('input[type=radio][name=radio-au]').on('change', function() {
+			toggle_autoupdate();
+		});
+
 		loadchart();
+		toggle_autoupdate();
 	});
 </script>
 </head>
@@ -181,12 +216,20 @@
 
   <fieldset>
     <legend>Approximation</legend>
-    <label for="radio-min">Max</label>
-    <input type="radio" name="radio-disp" id="radio-min" value="0" checked>
-    <label for="radio-max">Min</label>
-    <input type="radio" name="radio-disp" id="radio-max" value="1">
+    <label for="radio-max">Max</label>
+    <input type="radio" name="radio-apx" id="radio-max" value="0" checked>
+    <label for="radio-min">Min</label>
+    <input type="radio" name="radio-apx" id="radio-min" value="1">
     <label for="radio-avg">Avg</label>
-    <input type="radio" name="radio-disp" id="radio-avg" value="2">
+    <input type="radio" name="radio-apx" id="radio-avg" value="2">
+  </fieldset>
+
+  <fieldset>
+    <legend>Autoscroll</legend>
+    <label for="radio-auon">On</label>
+    <input type="radio" name="radio-au" id="radio-auon" value="1">
+    <label for="radio-auoff">Off</label>
+    <input type="radio" name="radio-au" id="radio-auoff" value="0" checked>
   </fieldset>
 
 <div id="chart">
