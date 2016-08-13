@@ -28,6 +28,7 @@ struct request_params
 {
 	int w, h; /* image width and height */
 	time_t start, end; /* start and end time of chart */
+	int pb; /* packets or bytes, if zero display packets in chart */
 };
 
 /* A coloured pixel */
@@ -318,6 +319,7 @@ build_chart(struct request_params *p)
 		p->end = p->start + n;
 	}
 
+	/* prepare chart, get height for each row */
 	for (i=0; i<p->w; i++) {
 		int64_t idx_start, idx_end, idx;
 		struct stat_info info;
@@ -334,13 +336,24 @@ build_chart(struct request_params *p)
 			if (s != sizeof(struct stat_info)) {
 				continue;
 			}
-			if (info.octets_pass > max.octets_pass) {
-				max.octets_pass = info.octets_pass;
-			}
 
-			if (info.octets_pass > lines[i].octets_pass) {
-				lines[i].octets_pass = info.octets_pass;
+#define LINE(PB) \
+	if (info.PB ## _pass > lines[i].PB ## _pass) { lines[i].PB ## _pass = info.PB ## _pass; } \
+	if (info.PB ## _drop > lines[i].PB ## _drop) { lines[i].PB ## _drop = info.PB ## _drop; }
+
+#define LINEM(PB) \
+	if (info.PB ## _pass > max.PB ## _pass) { max.PB ## _pass = info.PB ## _pass; }\
+	if (info.PB ## _drop > max.PB ## _drop) { max.PB ## _drop = info.PB ## _drop; }
+
+			if (p->pb) {
+				LINE(octets)
+				LINEM(octets)
+			} else {
+				LINE(packets)
+				LINEM(packets)
 			}
+#undef LINEM
+#undef LINE
 		}
 	}
 
@@ -350,11 +363,16 @@ build_chart(struct request_params *p)
 	for (i=0; i<p->w; i++) {
 		int line_h, j;
 
-		if (max.octets_pass > 0) {
-			line_h = p->h * lines[i].octets_pass / max.octets_pass;
+#define LINE_H(PB) if (max.PB ## _pass > 0) { line_h = p->h * lines[i].PB ## _pass / max.PB ## _pass; }\
+	else { line_h = 0; }
+
+		if (p->pb) {
+			LINE_H(octets)
 		} else {
-			line_h = 0;
+			LINE_H(packets)
 		}
+
+#undef LINE_H
 		for (j=0; j<line_h; j++) {
 			pixel_t *pixel = rep.pixels + p->w * (p->h - j - 1) + i;
 			pixel->red = 0;
@@ -366,8 +384,8 @@ build_chart(struct request_params *p)
 			line_h = p->h * lines[i].octets_drop / max.octets_drop;
 			for (j=0; j<line_h; j++) {
 				pixel_t *pixel = rep.pixels + p->w * (p->h - j - 1) + i;
-				pixel->red = 200;
-				pixel->green = 0;
+				pixel->red = 100;
+				pixel->green = 50;
 				pixel->blue = 0;
 			}
 		}
@@ -392,7 +410,7 @@ build_chart(struct request_params *p)
 	r->start = p->start;
 	r->end = p->end;
 
-	r->max = max.octets_pass; /* ??? */
+	r->max = p->pb ? max.octets_pass : max.packets_pass;
 
 fail_resp:
 	/* free raw image */
@@ -444,6 +462,8 @@ parse_params(struct request_params *p, char *q)
 			p->start = atol(ptr + 6);
 		} else if (memcmp(ptr, "end=", 4) == 0) {
 			p->end = atol(ptr + 4);
+		} else if (memcmp(ptr, "pb=", 3) == 0) {
+			p->pb = atoi(ptr + 3);
 		}
 		ptr = last ? end : end + 1;
 	}

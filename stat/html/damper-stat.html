@@ -25,6 +25,7 @@
 	}
 
 	function human_readable_speed(speed) {
+		speed = speed * 8; // translate to bits per second
 		var KILO = 1000;
 		var MEGA = KILO * KILO;
 		var GIGA = KILO * KILO * KILO;
@@ -37,7 +38,7 @@
 		} else if (speed > KILO) {
 			hrspeed = +(speed / KILO).toFixed(1) + "K";
 		} else {
-			hrspeed = +speed.toFixed(2);
+			hrspeed = +speed.toFixed(1);
 		}
 
 		return hrspeed;
@@ -51,7 +52,7 @@
 		ctx = canvas[0].getContext("2d");
 		/* FIXME: check if canvas not supported */
 
-		wlabel_h = ctx.measureText("999WW").width + 10;
+		wlabel_h = ctx.measureText("999.9WW").width + 10;
 
 		image = new Image();
 		image.onload = function() {
@@ -70,6 +71,7 @@
 		imgparams["h"] = h;
 		imgparams["start"] = window.time_start;
 		imgparams["end"] = window.time_end;
+		imgparams["pb"] = $("input:radio[name ='radio-pb']:checked").val();
 
 		$.get( "damper-img", imgparams )
 			.done(function(data) {
@@ -158,6 +160,11 @@
 			loadchart();
 		});
 
+		/* show bytes or packets */
+		$('input[type=radio][name=radio-pb]').on('change', function() {
+			loadchart();
+		});
+
 		loadchart();
 	});
 </script>
@@ -167,19 +174,19 @@
   <fieldset>
     <legend>Packets/bytes</legend>
     <label for="radio-b">Bytes</label>
-    <input type="radio" name="radio-pb" id="radio-b" checked>
+    <input type="radio" name="radio-pb" id="radio-b" value="1" checked>
     <label for="radio-p">Packets</label>
-    <input type="radio" name="radio-pb" id="radio-p">
+    <input type="radio" name="radio-pb" id="radio-p" value="0">
   </fieldset>
 
   <fieldset>
-    <legend>Display</legend>
-    <label for="radio-min">Min</label>
-    <input type="radio" name="radio-disp" id="radio-min" checked>
-    <label for="radio-max">Max</label>
-    <input type="radio" name="radio-disp" id="radio-max">
+    <legend>Approximation</legend>
+    <label for="radio-min">Max</label>
+    <input type="radio" name="radio-disp" id="radio-min" value="0" checked>
+    <label for="radio-max">Min</label>
+    <input type="radio" name="radio-disp" id="radio-max" value="1">
     <label for="radio-avg">Avg</label>
-    <input type="radio" name="radio-disp" id="radio-avg">
+    <input type="radio" name="radio-disp" id="radio-avg" value="2">
   </fieldset>
 
 <div id="chart">

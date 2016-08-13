@@ -100,7 +100,7 @@ fail:
 }
 
 static void
-stat_write(struct userdata *u, struct nfq_data *nfad)
+stat_write(struct userdata *u)
 {
 	time_t t;
 	struct stat_info old_stat;
@@ -295,8 +295,6 @@ userdata_init(char *confname)
 
 	/* init mutex */
 	pthread_mutex_init(&u->lock, NULL);
-	/* and condition variable */
-	pthread_cond_init(&u->cond, NULL);
 
 	/* configuration done, notify modules */
 	for (i=0; modules[i].name; i++) {
@@ -341,7 +339,6 @@ userdata_destroy(struct userdata *u)
 		}
 	}
 
-	pthread_cond_destroy(&u->cond);
 	pthread_mutex_destroy(&u->lock);
 
 	if (u->stat) {
@@ -357,38 +354,19 @@ static void *
 sender_thread(void *arg)
 {
 #define BILLION ((uint64_t)1000000000)
-#define ROUNDUP(N, M) (((N + M - 1) / M) * M)
 
 	struct userdata *u = arg;
 	int sendres;
 	size_t i, idx = 0;
 	double max = DBL_MIN;
-	uint64_t octets_allowed, octets_passed = 0, limit;
-	uint64_t tcurr_ns, tprev_ns = 0;
-	uint64_t delta_t = 100;
+	uint64_t limit;
+	uint64_t sleep_ns;
 
 	for (;;) {
 		struct timespec ts;
 
-		clock_gettime(CLOCK_MONOTONIC, &ts);
-		tcurr_ns = ts.tv_sec * BILLION + ts.tv_nsec;
-		tcurr_ns = ROUNDUP(tcurr_ns, delta_t);
-
-		if (tcurr_ns != tprev_ns) {
-			octets_passed = 0;
-			tprev_ns = tcurr_ns;
-		}
-
 		pthread_mutex_lock(&u->lock);
 		limit = u->limit;
-
-		delta_t = DAMPER_MAX_PACKET_SIZE * BILLION / limit;
-		if (delta_t > BILLION) {
-			delta_t = BILLION;
-		} else if (delta_t < 100) {
-			delta_t = 100;
-		}
-		octets_allowed = (limit * delta_t / BILLION) - octets_passed;
 
 		/* search for packet with maximum priority */
 		max = DBL_MIN;
@@ -399,11 +377,7 @@ sender_thread(void *arg)
 			}
 		}
 
-		if (max == DBL_MIN) {
-			goto wait_data;
-		}
-
-		if (octets_allowed >= u->packets[idx].size) {
+		if (max != DBL_MIN) {
 			sendres = sendto(u->socket, u->packets[idx].packet, u->packets[idx].size, 0,
 				(struct sockaddr *)&(u->daddr), (socklen_t)sizeof(u->daddr));
 
@@ -412,22 +386,33 @@ sender_thread(void *arg)
 			}
 
 			u->prioarray[idx] = DBL_MIN;
-			octets_passed += sendres;
+
+			/* update statistics */
+			if (u->stat) {
+				u->stat_info.packets_pass += 1;
+				u->stat_info.octets_pass+= sendres;
+				stat_write(u);
+			}
+			sleep_ns = (sendres * BILLION) / limit;
 		} else {
-			goto wait_data;
+			/* no data to send, so just sleep for time required to transfer 100 bytes */
+			sleep_ns = 100 * BILLION / limit;
+		}
+
+		if (sleep_ns > BILLION) {
+			ts.tv_sec = sleep_ns / BILLION;
+			ts.tv_nsec = sleep_ns % BILLION;
+		} else {
+			ts.tv_sec = 0;
+			ts.tv_nsec = sleep_ns;
 		}
 
 		pthread_mutex_unlock(&u->lock);
-		continue;
-
-wait_data:
-		pthread_cond_wait(&u->cond, &u->lock);
-		pthread_mutex_unlock(&u->lock);
+		clock_nanosleep(CLOCK_MONOTONIC, 0, &ts, NULL);
 	}
 
 	return NULL;
 
-#undef ROUNDUP
 #undef BILLION
 }
 
@@ -438,7 +423,6 @@ add_to_queue(struct userdata *u, char *packet, int plen, double prio)
 	size_t i, idx = 0;
 	double min = DBL_MAX;
 
-	pthread_mutex_lock(&u->lock);
 	/* search for packet with minimum priority */
 	for (i=0; i<u->qlen; i++) {
 		if (min > u->prioarray[i]) {
@@ -449,15 +433,17 @@ add_to_queue(struct userdata *u, char *packet, int plen, double prio)
 
 	/* and replace it with new packet */
 	if (min < prio) {
+		if ((min != DBL_MIN) && (u->stat)) {
+			/* update statistics */
+			u->stat_info.packets_drop += 1;
+			u->stat_info.octets_drop += u->packets[idx].size;
+			stat_write(u);
+		}
+
 		u->prioarray[idx] = prio;
 		u->packets[idx].size = plen;
 		memcpy(u->packets[idx].packet, packet, plen);
 	}
-
-	/* notify sender thread that we have data */
-	pthread_cond_signal(&u->cond);
-
-	pthread_mutex_unlock(&u->lock);
 }
 
 static int
@@ -496,13 +482,14 @@ on_packet(struct nfq_q_handle *qh,
 		}
 	}
 
+	pthread_mutex_lock(&u->lock);
 	if (weight < 0) {
-		/* drop packets with with negative weight */
-		/* statistics */
+		/* don't put in queue packets with with negative weight (e.g. drop) */
+		/* update statistics */
 		if (u->stat) {
 			u->stat_info.packets_drop += 1;
 			u->stat_info.octets_drop += plen;
-			stat_write(u, nfad);
+			stat_write(u);
 		}
 	} else {
 		/* add to queue with positive weight */
@@ -512,13 +499,8 @@ on_packet(struct nfq_q_handle *qh,
 		}
 
 		add_to_queue(u, p, plen, weight);
-		/* statistics */
-		if (u->stat) {
-			u->stat_info.packets_pass += 1;
-			u->stat_info.octets_pass+= plen;
-			stat_write(u, nfad);
-		}
 	}
+	pthread_mutex_unlock(&u->lock);
 
 	/* drop packet */
 	verdict = NF_DROP;
