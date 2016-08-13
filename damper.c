@@ -188,7 +188,12 @@ config_read(struct userdata *u, char *confname)
 			size_t i;
 			for (i=0; modules[i].name; i++) {
 				if (!strcmp(cmd, modules[i].name) && modules[i].conf) {
-					(modules[i].conf)(modules[i].mptr, p1, p2);
+					if (!strcmp(p1, "k")) {
+						/* multiplicator */
+						modules[i].k = atof(p2);
+					} else {
+						(modules[i].conf)(modules[i].mptr, p1, p2);
+					}
 					break;
 				}
 			}
@@ -218,7 +223,10 @@ userdata_init(char *confname)
 	/* init modules */
 	for (i=0; modules[i].name; i++) {
 		if (modules[i].init) {
-			modules[i].mptr = (modules[i].init)(u);
+			/* default multiplicator */
+			modules[i].k = 1.0f;
+
+			modules[i].mptr = (modules[i].init)(u, i);
 		} else {
 			modules[i].mptr = NULL;
 		}
@@ -477,8 +485,10 @@ on_packet(struct nfq_q_handle *qh,
 	/* calculate weight for each enabled module */
 	for (i=0; modules[i].name; i++) {
 		if (modules[i].weight && modules[i].enabled) {
-			weight *= (modules[i].weight)(modules[i].mptr, p, plen, mark);
-			if (weight < 0.0) break;
+			double mweight = (modules[i].weight)(modules[i].mptr, p, plen, mark);
+
+			if (mweight < 0.0) break;
+			weight += mweight * modules[i].k;
 		}
 	}
 

@@ -60,13 +60,12 @@ struct userdata
 	uint64_t limit;
 
 	int mark; /* reinjected packets mark */
-	int dscp; /* and we can set DSCP (Differenciated Services Code Point) */
+	int dscp; /* or we can set DSCP (Differenciated Services Code Point) */
 
 	char interface[IFNAMSIZ];
 
 	pthread_t sender_tid;
 	pthread_mutex_t lock;
-	/*pthread_cond_t cond;*/
 
 	int stat; /* enable statistics */
 	char statdir[PATH_MAX];
@@ -78,7 +77,7 @@ struct userdata
 
 /* modules */
 
-typedef void * (*module_init_func)    (struct userdata *);
+typedef void * (*module_init_func)    (struct userdata *, size_t n);
 typedef void   (*module_conf_func)    (void *, char *param1, char *param2);
 typedef int    (*module_postconf_func)(void *);
 typedef double (*module_weight_func)  (void *, char *packet, int packetlen, int mark);
@@ -92,6 +91,8 @@ struct module_info
 	module_postconf_func postconf;
 	module_weight_func weight;
 	module_done_func done;
+
+	double k; /* multiplicator */
 
 	void *mptr;
 	int enabled;

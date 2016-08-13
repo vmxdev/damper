@@ -10,20 +10,26 @@ struct inhibit_big_flows
 	int nflows;
 	int currflow;
 	uint64_t flow_octets;
+	size_t module_number;
 
 	int debug;
 	pthread_t debug_tid;
 	pthread_mutex_t lock;
+
+	char *statdir;
+	FILE *fdbg;
 };
 
 void *
-inhibit_big_flows_init(struct userdata *u)
+inhibit_big_flows_init(struct userdata *u, size_t n)
 {
 	struct inhibit_big_flows *data;
 
 	data = malloc(sizeof(struct inhibit_big_flows));
 	if (!data) {
-		fprintf(stderr, "malloc(%lu) failed\n", sizeof(struct inhibit_big_flows));
+		fprintf(stderr, "Module %s: malloc(%lu) failed\n",
+			modules[n].name,
+			sizeof(struct inhibit_big_flows));
 		goto fail_alloc;
 	}
 
@@ -32,6 +38,8 @@ inhibit_big_flows_init(struct userdata *u)
 	data->flow_octets = 0;
 
 	data->debug = 0;
+	data->module_number = n;
+	data->statdir = u->statdir;
 	pthread_mutex_init(&data->lock, NULL);
 
 	return data;
@@ -50,12 +58,14 @@ inhibit_big_flows_conf(void *arg, char *param1, char *param2)
 	} else if (!strcmp(param1, "debug")) {
 		data->debug = atoi(param2);
 		if (data->debug <= 0) {
-			fprintf(stderr, "Module inhibit_big_flows: strange debug value %d\n",
+			fprintf(stderr, "Module %s: strange debug value %d\n",
+				modules[data->module_number].name,
 				data->debug);
 			data->debug = 0;
 		}
 	} else {
-		fprintf(stderr, "Module inhibit_big_flows: unknown config parameter '%s'\n", param1);
+		fprintf(stderr, "Module %s: unknown config parameter '%s'\n",
+			modules[data->module_number].name, param1);
 	}
 }
 
@@ -63,32 +73,25 @@ void *
 inhibit_big_flows_debug(void *arg)
 {
 	struct inhibit_big_flows *data = arg;
-	FILE *f;
 	int i;
 
 	for (;;) {
 		sleep(data->debug);
-		f = fopen("ilog.txt", "a");
-		if (!f) {
-			continue;
-		}
-
 		pthread_mutex_lock(&data->lock);
 
-		fprintf(f, "total: %lu\n", data->flow_octets);
+		fprintf(data->fdbg, "total: %lu\n", data->flow_octets);
 		for (i=0; i<data->nflows; i++) {
 			struct in_addr saddr, daddr;
 
 			saddr.s_addr = data->recent_flows[i].saddr;
 			daddr.s_addr = data->recent_flows[i].daddr;
-			fprintf(f, "%d: [%s => ", i, inet_ntoa(saddr));
-			fprintf(f, "%s] %lu\n", inet_ntoa(daddr), data->recent_flows[i].octets);
+			fprintf(data->fdbg, "%d: [%s => ", i, inet_ntoa(saddr));
+			fprintf(data->fdbg, "%s] %lu\n", inet_ntoa(daddr), data->recent_flows[i].octets);
 		}
 
 		pthread_mutex_unlock(&data->lock);
 
-		fprintf(f, "\n\n");
-		fclose(f);
+		fprintf(data->fdbg, "\n\n");
 	}
 	return NULL;
 }
@@ -99,20 +102,30 @@ inhibit_big_flows_postconf(void *arg)
 	struct inhibit_big_flows *data = arg;
 
 	if (data->nflows < 1) {
-		fprintf(stderr, "Module 'inhibit_big_flows': incorrect value %d for number of recent flows\n",
-			data->nflows);
+		fprintf(stderr, "Module %s: incorrect value %d for number of recent flows\n",
+			modules[data->module_number].name, data->nflows);
 		goto fail;
 	}
 
 	/* create array of recent flows */
 	data->recent_flows = malloc(data->nflows * sizeof(struct flow));
 	if (!data->recent_flows) {
-		fprintf(stderr, "malloc() failed for %d recent flows\n", data->nflows);
+		fprintf(stderr, "Module %s: malloc() failed for %d recent flows\n",
+			modules[data->module_number].name, data->nflows);
 		goto fail;
 	}
 	memset(data->recent_flows, 0, data->nflows * sizeof(struct flow));
 
 	if (data->debug) {
+		char debugfile[PATH_MAX];
+
+		snprintf(debugfile, PATH_MAX, "%s/ilog.txt", data->statdir);
+		data->fdbg = fopen(debugfile, "a");
+		if (!data->fdbg) {
+			fprintf(stderr, "Module %s: can't open file '%s'\n",
+				modules[data->module_number].name, debugfile);
+			goto fail;
+		}
 		pthread_create(&data->debug_tid, NULL, &inhibit_big_flows_debug, data);
 	}
 
@@ -127,6 +140,9 @@ inhibit_big_flows_free(void *arg)
 {
 	struct inhibit_big_flows *data = arg;
 
+	if (data->debug) {
+		fclose(data->fdbg);
+	}
 	free(data->recent_flows);
 	free(data);
 }
@@ -174,7 +190,12 @@ inhibit_big_flows_weight(void *arg, char *packet, int packetlen, int mark)
 
 	data->flow_octets += packetlen;
 
-	m = (double)data->recent_flows[i].octets / data->flow_octets;
+	if (data->recent_flows[i].octets > 0) {
+		m = (double)data->flow_octets / data->recent_flows[i].octets;
+	} else {
+		/* something greater than 0 */
+		m = DBL_EPSILON;
+	}
 
 	if (data->debug) {
 		pthread_mutex_unlock(&data->lock);
