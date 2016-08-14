@@ -216,7 +216,7 @@ userdata_init(char *confname)
 
 	u = malloc(sizeof(struct userdata));
 	if (!u) {
-		fprintf(stderr, "malloc(%lu) failed\n", sizeof(struct userdata));
+		fprintf(stderr, "malloc(%lu) failed\n", (long)sizeof(struct userdata));
 		goto fail_create;
 	}
 
@@ -248,14 +248,14 @@ userdata_init(char *confname)
 	/* reserve memory for packets in queue */
 	u->packets = malloc(u->qlen * sizeof(struct mpacket));
 	if (!u->packets) {
-		fprintf(stderr, "malloc(%lu) failed\n", u->qlen * sizeof(struct mpacket));
+		fprintf(stderr, "malloc(%lu) failed\n", (long)u->qlen * sizeof(struct mpacket));
 		goto fail_packets;
 	}
 
 	/* create priority array - simplified implementation of priority queue */
 	u->prioarray = malloc(u->qlen * sizeof(double));
 	if (!u->prioarray) {
-		fprintf(stderr, "malloc(%lu) failed\n", u->qlen * sizeof(double));
+		fprintf(stderr, "malloc(%lu) failed\n", (long)u->qlen * sizeof(double));
 		goto fail_prio_array;
 	}
 	/* fill priority array with minimal possible values */
@@ -474,7 +474,7 @@ on_packet(struct nfq_q_handle *qh,
 		return -1;
 	}
 
-	if ((plen = nfq_get_payload(nfad, &p)) < 0) {
+	if ((plen = nfq_get_payload(nfad, (unsigned char **)&p)) < 0) {
 		return -1;
 	}
 

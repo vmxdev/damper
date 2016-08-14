@@ -20,7 +20,7 @@ bymark_init(struct userdata *u, size_t n)
 	data = malloc(sizeof(struct bymark));
 	if (!data) {
 		fprintf(stderr, "Module %s: malloc(%lu) failed\n",
-			modules[n].name, sizeof(struct bymark));
+			modules[n].name, (long)sizeof(struct bymark));
 		goto fail_alloc;
 	}
 

@@ -29,7 +29,7 @@ inhibit_big_flows_init(struct userdata *u, size_t n)
 	if (!data) {
 		fprintf(stderr, "Module %s: malloc(%lu) failed\n",
 			modules[n].name,
-			sizeof(struct inhibit_big_flows));
+			(long)sizeof(struct inhibit_big_flows));
 		goto fail_alloc;
 	}
 
@@ -79,14 +79,14 @@ inhibit_big_flows_debug(void *arg)
 		sleep(data->debug);
 		pthread_mutex_lock(&data->lock);
 
-		fprintf(data->fdbg, "total: %lu\n", data->flow_octets);
+		fprintf(data->fdbg, "total: %lu\n", (long)data->flow_octets);
 		for (i=0; i<data->nflows; i++) {
 			struct in_addr saddr, daddr;
 
 			saddr.s_addr = data->recent_flows[i].saddr;
 			daddr.s_addr = data->recent_flows[i].daddr;
 			fprintf(data->fdbg, "%d: [%s => ", i, inet_ntoa(saddr));
-			fprintf(data->fdbg, "%s] %lu\n", inet_ntoa(daddr), data->recent_flows[i].octets);
+			fprintf(data->fdbg, "%s] %lu\n", inet_ntoa(daddr), (long)data->recent_flows[i].octets);
 		}
 
 		pthread_mutex_unlock(&data->lock);

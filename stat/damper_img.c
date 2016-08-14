@@ -525,7 +525,7 @@ scgi_thread(void *arg)
 	}
 	start = memchr(buf, ':', rres);
 	if (!start) {
-		fprintf(stderr, "Can't find ':' in first %lu bytes of request\n", rres);
+		fprintf(stderr, "Can't find ':' in first %lu bytes of request\n", (long)rres);
 		goto fail;
 	}
 
