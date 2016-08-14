@@ -6,24 +6,27 @@ struct mark_weight
 
 struct bymark
 {
-	size_t nmarks;
+	size_t module_number;
 
+	size_t nmarks;
 	struct mark_weight *mw;
 };
 
 void *
-bymark_init(struct userdata *u)
+bymark_init(struct userdata *u, size_t n)
 {
 	struct bymark *data;
 
 	data = malloc(sizeof(struct bymark));
 	if (!data) {
-		fprintf(stderr, "malloc(%lu) failed\n", sizeof(struct bymark));
+		fprintf(stderr, "Module %s: malloc(%lu) failed\n",
+			modules[n].name, sizeof(struct bymark));
 		goto fail_alloc;
 	}
 
 	data->nmarks = 0;
 	data->mw = NULL;
+	data->module_number = n;
 
 	return data;
 
@@ -41,21 +44,23 @@ bymark_conf(void *arg, char *param1, char *param2)
 
 	mark = strtol(param1, NULL, 10);
 	if (errno) {
-		fprintf(stderr, "Module bymark: can't convert '%s' (mark) to integer \n",
+		fprintf(stderr, "Module %s: can't convert '%s' (mark) to integer \n",
+			modules[data->module_number].name,
 			param1);
 		mark = 0;
 	}
 
 	weight = strtod(param2, NULL);
 	if (errno) {
-		fprintf(stderr, "Module bymark: can't convert '%s' (mark weight) to double \n",
+		fprintf(stderr, "Module %s: can't convert '%s' (mark weight) to double \n",
+			modules[data->module_number].name,
 			param2);
 	}
 
 	data->nmarks++;
 	tmp_mw = realloc(data->mw, sizeof(struct mark_weight) * data->nmarks);
 	if (!tmp_mw) {
-		fprintf(stderr, "Module bymark: realloc() failed\n");
+		fprintf(stderr, "Module %s: realloc() failed\n", modules[data->module_number].name);
 		free(data->mw);
 		data->mw = NULL;
 		data->nmarks = 0;
@@ -88,7 +93,7 @@ bymark_weight(void *arg, char *packet, int packetlen, int mark)
 {
 	unsigned int i;
 	struct bymark *data = arg;
-	double m = 1.0;
+	double m = DBL_EPSILON;
 
 	for (i=0; i<data->nmarks; i++) {
 		if (mark == data->mw[i].mark) {

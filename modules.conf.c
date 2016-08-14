@@ -12,5 +12,13 @@ struct module_info modules[] = {
 		&inhibit_big_flows_weight,	/* weight calculation */
 		&inhibit_big_flows_free		/* destructor */
 	},
+	{
+		"bymark",
+		&bymark_init,
+		&bymark_conf,
+		&bymark_postconf,
+		&bymark_weight,
+		&bymark_free
+	},
 	{NULL}
 };
