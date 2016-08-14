@@ -5,6 +5,8 @@ Utility for shaping network traffic. `damper` uses NFQUEUE mechanism for capture
 
 ### Compiling
 
+(netfilter-queue library required)
+
 ```sh
 $ cc -Wall -pedantic damper.c modules.conf.c -o damper -lnetfilter_queue -pthread -lrt -lm
 ```
@@ -50,7 +52,24 @@ To make it work put "iface lo" in config, reinjected packets will be generated o
 
 ### Statistics
 
-Demo http://damper.xenoeye.com
+damper comes with web-based statistics viewer, demo available here: http://damper.xenoeye.com
+
+Chart displayed using SCGI module. It can be integrated with Apache, Nginx, lighthttp or any web-server which support SCGI interface
+
+To compile module:
+
+```sh
+$ cd stat
+$ cc -g -Wall -pedantic damper_img.c -o damper_img -lpng -pthread
+```
+
+Now you can run it and configure http-server
+
+```sh
+$ ./damper_img 9001 /var/lib/damper/ &
+```
+
+Sample Nginx configuration:
 
 ```
 server {
@@ -64,15 +83,15 @@ server {
         scgi_param SCRIPT_NAME "/damper-img";
    }
 
-    location = /favicon.ico {
-        log_not_found off;
-        access_log off;
-    }
-
-
     location / {
         try_files $uri $uri/index.html index.html;
     }
 
 }
+```
+
+For Apache add this string to <VirtualHost>:
+
+```
+SCGIMount /damper-img 127.0.0.1:9001
 ```
