@@ -12,6 +12,7 @@
 #include <float.h>
 #include <errno.h>
 #include <unistd.h>
+#include <math.h>
 
 /* IP header */
 struct damper_ip_header

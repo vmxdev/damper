@@ -2,8 +2,10 @@
 
 #include "inhibit_big_flows.c"
 #include "bymark.c"
+#include "entropy.c"
 
 struct module_info modules[] = {
+#if 0
 	{
 		"inhibit_big_flows",		/* module name */
 		&inhibit_big_flows_init,	/* constructor */
@@ -12,13 +14,23 @@ struct module_info modules[] = {
 		&inhibit_big_flows_weight,	/* weight calculation */
 		&inhibit_big_flows_free		/* destructor */
 	},
-	{
+/*	{
 		"bymark",
 		&bymark_init,
 		&bymark_conf,
 		&bymark_postconf,
 		&bymark_weight,
 		&bymark_free
+	},
+*/
+#endif
+	{
+		"entropy",
+		&entropy_init,
+		&entropy_conf,
+		&entropy_postconf,
+		&entropy_weight,
+		&entropy_free
 	},
 	{NULL}
 };

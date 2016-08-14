@@ -17,6 +17,8 @@
 
 #include "../damper.h"
 
+static char statpath[PATH_MAX];
+
 /* struct for passing parameters to scgi thread */
 struct scgi_thread_arg
 {
@@ -327,14 +329,15 @@ build_chart(struct request_params *p)
 	struct stat st;
 	struct membuf mempng;  /* png in memory */
 	struct response *r = NULL;
+	char sp[PATH_MAX];
 
 	lines = calloc(2 * sizeof(int), p->w);
 	if (!lines) {
 		goto fail;
 	}
 
-	/* FIXME: path from command line */
-	f = fopen("/var/lib/damper/stat.dat", "r");
+	snprintf(sp, PATH_MAX, "%s/stat.dat", statpath);
+	f = fopen(sp, "r");
 	if (!f) {
 		fprintf(stderr, "Can't open stat file\n");
 		goto fail_freelines;
@@ -624,14 +627,23 @@ fail:
 }
 
 int
-main()
+main(int argc, char *argv[])
 {
 	struct sockaddr_in name;
 	in_addr_t saddr;
 	int s;
 	int ret = 1, on = 1;
 	char *addr = "127.0.0.1";
-	int port = 9001;
+	int port;
+
+	if (argc < 3) {
+		fprintf(stderr, "Usage: %s port stat-directory\n", argv[0]);
+		fprintf(stderr, "For example: %s 9001 /var/lib/damper/\n", argv[0]);
+		goto fail;
+	}
+
+	port = atoi(argv[1]);
+	strncpy(statpath, argv[2], PATH_MAX);
 
 	s = socket(AF_INET, SOCK_STREAM, 0);
 	if (s < 0) {

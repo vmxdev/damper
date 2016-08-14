@@ -92,6 +92,7 @@ inhibit_big_flows_debug(void *arg)
 		pthread_mutex_unlock(&data->lock);
 
 		fprintf(data->fdbg, "\n\n");
+		fflush(data->fdbg);
 	}
 	return NULL;
 }

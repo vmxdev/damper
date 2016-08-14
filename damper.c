@@ -152,6 +152,8 @@ config_read(struct userdata *u, char *confname)
 
 	u->stat = 0;
 	u->statdir[0] = '\0';
+	u->mark = 0;
+	u->dscp = 0;
 
 	while (fgets(line, sizeof(line), f)) {
 		char cmd[LINE_MAX], p1[LINE_MAX], p2[LINE_MAX];

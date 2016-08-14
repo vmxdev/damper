@@ -6,7 +6,7 @@ Utility for shaping network traffic. `damper` uses NFQUEUE mechanism for capture
 ### Compiling
 
 ```sh
-$ cc -Wall -pedantic damper.c modules.conf.c -o damper -lnetfilter_queue -pthread -lrt
+$ cc -Wall -pedantic damper.c modules.conf.c -o damper -lnetfilter_queue -pthread -lrt -lm
 ```
 
 ### Running on local box
@@ -49,3 +49,6 @@ To make it work put "iface lo" in config, reinjected packets will be generated o
 
 
 ### Statistics
+
+Demo http://damper.xenoeye.com
+
