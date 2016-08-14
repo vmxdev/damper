@@ -52,3 +52,27 @@ To make it work put "iface lo" in config, reinjected packets will be generated o
 
 Demo http://damper.xenoeye.com
 
+```
+server {
+    server_name MY.SERVER.NAME;
+    root /var/www/MY.LOCATION; 
+
+   # images
+   location /damper-img {
+        include scgi_params;
+        scgi_pass 127.0.0.1:9001;
+        scgi_param SCRIPT_NAME "/damper-img";
+   }
+
+    location = /favicon.ico {
+        log_not_found off;
+        access_log off;
+    }
+
+
+    location / {
+        try_files $uri $uri/index.html index.html;
+    }
+
+}
+```

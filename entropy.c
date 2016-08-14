@@ -17,7 +17,8 @@ struct entropy
 
 	struct entflow *recent_flows;
 	int nflows;
-	int currflow; /* pointer to current entry in flows circular buffer */
+	int currflow;     /* pointer to current entry in flows circular buffer */
+	int sport, dport; /* override packet values with values from config */
 
 	int debug;
 	pthread_t debug_tid;
@@ -66,6 +67,7 @@ entropy_init(struct userdata *u, size_t n)
 	data->debug = 0;
 	data->module_number = n;
 	data->statdir = u->statdir;
+	data->sport = data->dport = -1;
 	pthread_mutex_init(&data->lock, NULL);
 
 	return data;
@@ -89,6 +91,10 @@ entropy_conf(void *arg, char *param1, char *param2)
 				data->debug);
 			data->debug = 0;
 		}
+	} else if (!strcmp(param1, "sport")) {
+		data->sport = atoi(param2);
+	} else if (!strcmp(param1, "dport")) {
+		data->dport = atoi(param2);
 	} else {
 		fprintf(stderr, "Module %s: unknown config parameter '%s'\n",
 			modules[data->module_number].name, param1);
@@ -210,8 +216,10 @@ entropy_weight(void *arg, char *packet, int packetlen, int mark)
 		char *tcp_udp;
 
 		tcp_udp = packet + ip_hdrlen;
-		sport = ntohs(*((uint16_t *)(tcp_udp)));
-		dport = ntohs(*((uint16_t *)(tcp_udp + sizeof(uint16_t))));
+		sport = (data->sport == -1) ? ntohs(*((uint16_t *)(tcp_udp)))
+			: data->sport;
+		dport = (data->dport == -1) ? ntohs(*((uint16_t *)(tcp_udp + sizeof(uint16_t))))
+			: data->dport;
 
 		if (proto == TCP_PROTO_NUM) {
 			payload = tcp_udp + 20; /* incorrect, payload may include tcp options */

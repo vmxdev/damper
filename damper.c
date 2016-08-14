@@ -466,7 +466,7 @@ on_packet(struct nfq_q_handle *qh,
 	char *p;
 	uint32_t mark;
 	struct userdata *u;
-	double weight = 1.0;
+	double weight = DBL_EPSILON;
 	size_t i;
 
 	struct nfqnl_msg_packet_hdr *ph = nfq_get_msg_packet_hdr(nfad);
