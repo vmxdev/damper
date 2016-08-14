@@ -166,13 +166,16 @@
 			var p0 = $(this).data('p0'),
 			p1 = { x: e.pageX, y: e.pageY },
 			d = p1.x - p0.x;
-			if (d < 3) {
-				/* maybe double-click? */
-			}
-			if (window.chart_w != 0) {
-				var dt = d * (window.time_end - window.time_start) / window.chart_w;
-				window.time_start = parseInt(window.time_start) - dt;
-				window.time_end   = parseInt(window.time_end) - dt;
+			if (Math.abs(d) < 4) {
+				/* double-click? */
+				window.time_start = 0;
+				window.time_end = 0;
+			} else {
+				if (window.chart_w != 0) {
+					var dt = d * (window.time_end - window.time_start) / window.chart_w;
+					window.time_start = parseInt(window.time_start) - dt;
+					window.time_end   = parseInt(window.time_end) - dt;
+				}
 			}
 			loadchart();
 		});
