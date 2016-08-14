@@ -56,7 +56,7 @@ entropy_init(struct userdata *u, size_t n)
 	if (!data) {
 		fprintf(stderr, "Module %s: malloc(%lu) failed\n",
 			modules[n].name,
-			sizeof(struct entropy));
+			(long)sizeof(struct entropy));
 		goto fail_alloc;
 	}
 
