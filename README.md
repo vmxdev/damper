@@ -46,17 +46,32 @@ And here is rules for shaping incoming TCP traffic on interface eth0.
 
 To make it work put "iface lo" in config, reinjected packets will be generated on loopback interface
 
+Make directory for statistics, if you plan to use it. And run shaper
+
+```sh
+# mkdir -p /var/lib/damper
+# ./damper damper.conf &
+```
+
 ### Running on router (shaping forwarded traffic)
 
+Shaping outgoing TCP traffic (upload)
+
+```sh
+# iptables -t raw -A OUTPUT -m mark --mark 88 -j ACCEPT
+# iptables -t raw -A PREROUTING -i eth0.210 -p tcp -j NFQUEUE --queue-num 3
+```
 
 
 ### Statistics
 
-damper comes with web-based statistics viewer, demo available here: http://damper.xenoeye.com
+damper comes with web-based statistics viewer, demo is available (or unavailable sometimes) here: http://damper.xenoeye.com
 
 Chart displayed using SCGI module. It can be integrated with Apache, Nginx, lighthttp or any web-server which support SCGI interface
 
 To compile module:
+
+(libpng required)
 
 ```sh
 $ cd stat
@@ -90,7 +105,7 @@ server {
 }
 ```
 
-For Apache add this string to <VirtualHost>:
+For Apache add this string to `<VirtualHost>`:
 
 ```
 SCGIMount /damper-img 127.0.0.1:9001
