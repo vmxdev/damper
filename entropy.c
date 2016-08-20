@@ -45,6 +45,10 @@ entropy_calc(struct entflow *e)
 	}
 	m = -m;
 
+	if (m > DBL_EPSILON) {
+		m = 1.0f / m;
+	}
+
 	return m;
 }
 
