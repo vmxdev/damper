@@ -11,6 +11,24 @@ Utility for shaping network traffic. `damper` uses NFQUEUE mechanism for capture
 $ cc -Wall -pedantic damper.c modules.conf.c -o damper -lnetfilter_queue -pthread -lrt -lm
 ```
 
+### Shaping and modules
+
+`damper` works approximately in this way: at startup two threads are created. First thread captures network packets (via NFQUEUE), calculate "weight" or priority for each one and put it in priority queue. Whet queue is full, packets with low priority replaced with high-priority packets. Second thread selects packets with high weight and sends (resends in fact) them. Resending happens with limited speed, and thus it shapes traffic.
+
+Packet weight is assigned in "modules", there is 4 out of box.
+
+- inhibit_big_flows - suppresses big flows. The more bytes transmitted between two IP addresses, the less weight of a packet in this flow.
+
+- bymark - packet weight is set by iptables mark. See damper.conf for details and example.
+
+- entropy - Shannon entropy calculated for each flow and used as weight. Flow identified by IP addresses, protocol number and source/destination ports in case of TCP or UDP. The more random is traffic (encrypted, compressed), the less weight is set to packet.
+
+- random - generates a random weight (as in classic RED shaping algorithm)
+
+To enable or disable module edit `modules.conf.c` file
+
+Weight from each module multiplied by module coefficient and summarized to get the final value.
+
 ### Running on local box
 
 For shaping outgoing locally generated TCP traffic
@@ -69,6 +87,8 @@ Shaping incoming TCP traffic destined to our network 192.168.0.0/24 ("download" 
 # iptables -t raw -A OUTPUT -m mark --mark 88 -j NOTRACK
 # iptables -t mangle -A FORWARD -d 192.168.0.0/24 -o eth0 -p tcp -j NFQUEUE --queue-num 3
 ```
+
+Be very careful with these rules, you may lose you router network connectivity
 
 ### Statistics
 
