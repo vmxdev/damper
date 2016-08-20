@@ -55,13 +55,20 @@ Make directory for statistics, if you plan to use it. And run shaper
 
 ### Running on router (shaping forwarded traffic)
 
-Shaping outgoing TCP traffic (upload)
+Shaping outgoing TCP traffic ("upload" as seen from user, egress)
 
 ```sh
 # iptables -t raw -A OUTPUT -m mark --mark 88 -j ACCEPT
-# iptables -t raw -A PREROUTING -i eth0.210 -p tcp -j NFQUEUE --queue-num 3
+# iptables -t raw -A PREROUTING -i eth0 -p tcp -j NFQUEUE --queue-num 3
 ```
+where `eth0` - internal router interface
 
+Shaping incoming TCP traffic destined to our network 192.168.0.0/24 ("download" as seen from user, ingress)
+
+```sh
+# iptables -t raw -A OUTPUT -m mark --mark 88 -j NOTRACK
+# iptables -t mangle -A FORWARD -d 192.168.0.0/24 -o eth0 -p tcp -j NFQUEUE --queue-num 3
+```
 
 ### Statistics
 
@@ -105,7 +112,7 @@ server {
 }
 ```
 
-For Apache add this string to `<VirtualHost>`:
+For Apache add this string to &lt;VirtualHost&gt;:
 
 ```
 SCGIMount /damper-img 127.0.0.1:9001
