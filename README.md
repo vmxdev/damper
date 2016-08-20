@@ -13,17 +13,17 @@ $ cc -Wall -pedantic damper.c modules.conf.c -o damper -lnetfilter_queue -pthrea
 
 ### Shaping and modules
 
-`damper` works approximately in this way: at startup two threads are created. First thread captures network packets (via NFQUEUE), calculate "weight" or priority for each one and put it in priority queue. Whet queue is full, packets with low priority replaced with high-priority packets. Second thread selects packets with high weight and sends (resends in fact) them. Resending happens with limited speed, and thus it shapes traffic.
+`damper` works approximately in this way: at startup two threads are created. First thread captures network packets (via NFQUEUE), calculate "weight" (or priority) for each one and put it in priority queue. Wheh queue is full, packets with low priority replaced with high-priority ones. Second thread selects packets with high weight and sends (resends in fact) them. Resending happens with limited speed, and thus it shapes traffic.
 
 Packet weight is assigned in "modules", there is 4 out of box.
 
 - inhibit_big_flows - suppresses big flows. The more bytes transmitted between two IP addresses, the less weight of a packet in this flow.
 
-- bymark - packet weight is set by iptables mark. See damper.conf for details and example.
+- bymark - packet weight is set by iptables mark. See `damper.conf` for details and example.
 
-- entropy - Shannon entropy calculated for each flow and used as weight. Flow identified by IP addresses, protocol number and source/destination ports in case of TCP or UDP. The more random is traffic (encrypted, compressed), the less weight is set to packet.
+- entropy - Shannon entropy calculated for each flow and used as weight. Flow identified by IP addresses, protocol number and source/destination ports in case of TCP or UDP. The more random is traffic (encrypted, compressed or multimedia traffic gets higher entropy values), the less weight is set to packet.
 
-- random - generates a random weight (as in classic RED shaping algorithm)
+- random - generates a random weight (when this module is used alone, we get the classic RED shaping algorithm)
 
 To enable or disable module edit `modules.conf.c` file
 
