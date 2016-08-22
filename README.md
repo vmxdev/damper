@@ -73,6 +73,8 @@ Be very careful with these rules, you may lose you router network connectivity
 
 damper comes with web-based statistics viewer, demo is available (or unavailable sometimes) here: http://damper.xenoeye.com
 
+You can zoom or pan chart by mouse, double-click returns to default
+
 Chart displayed using SCGI module. It can be integrated with Apache, Nginx, lighthttp or any web-server which support SCGI interface
 
 To compile module:
@@ -83,6 +85,8 @@ To compile module:
 $ cd stat
 $ cc -g -Wall -pedantic damper_img.c -o damper_img -lpng -pthread
 ```
+
+Copy content of `damper/stat/html/` directory to server root directory
 
 Now you can run it and configure http-server
 
@@ -110,8 +114,6 @@ server {
 
 }
 ```
-
-Copy content of `damper/stat/html/` directory to server root directory (`/var/www/MY.LOCATION` in this example)
 
 For Apache add this string to &lt;VirtualHost&gt;:
 
