@@ -1,7 +1,7 @@
 # damper
 Linux userspace traffic shaper
 
-Utility for shaping network traffic. `damper` uses NFQUEUE mechanism for capture traffic and raw sockets for re-injecting. All processing occurs in user space as opposed to traditional kernel space Linux traffic shaping.
+Utility for shaping network traffic. `damper` uses NFQUEUE mechanism for traffic shaping. All processing occurs in user space as opposed to traditional kernel space Linux traffic shaping.
 
 ### Compiling
 
@@ -13,7 +13,7 @@ $ cc -Wall -pedantic damper.c modules.conf.c -o damper -lnetfilter_queue -pthrea
 
 ### Shaping and modules
 
-`damper` works approximately in this way: at startup two threads are created. First thread captures network packets (via NFQUEUE), calculate "weight" (or priority) for each one and put it in priority queue. Wheh queue is full, packets with low priority replaced with high-priority ones. Second thread selects packets with high weight and sends (resends in fact) them. Resending happens with limited speed, and thus it shapes traffic.
+`damper` works approximately in this way: at startup two threads are created. First thread captures network packets (via NFQUEUE), calculate "weight" (or priority) for each one and put it in priority queue. Wheh queue is full, packets with low priority replaced with high-priority ones. Second thread selects packets with high weight and sends (notify kernel to send in fact) them. Sending happens with limited speed (which is set in config file), and thus it shapes traffic.
 
 Packet weight is assigned in "modules", there is 4 out of box.
 
@@ -25,44 +25,23 @@ Packet weight is assigned in "modules", there is 4 out of box.
 
 - random - generates a random weight (when this module is used alone, we get the classic RED shaping algorithm)
 
-To enable or disable module edit `modules.conf.c` file
+To enable or disable modules edit `modules.conf.c` file
 
 Weight from each module multiplied by module coefficient and summarized to get the final value.
 
 ### Running on local box
 
-For shaping outgoing locally generated TCP traffic
-
-First allow reinjected traffic. It prevents the same network packet to be passed to shaper again. Reinjected packets can be marked in shaper ("mark" directive in damper.conf).
-
-```sh
-# iptables -t raw -A OUTPUT -m mark --mark 88 -j ACCEPT
-```
-
-Or if you want to change DSCP value in reinjected packets instead of using mark ("2" is new packets DSCP, "dscp" directive in config):
-
-```sh
-# iptables -t raw -A OUTPUT -m dscp --dscp 2 -j ACCEPT
-```
-
-Next select traffic for shaping. For example with this rule all locally-generated TCP traffic will be sent to shaper (which is listening on queue number 3, "queue" in config).
+For shaping outgoing locally generated TCP traffic add this rule to your iptables:
 
 ```sh
 # iptables -t raw -A OUTPUT -p tcp -j NFQUEUE --queue-num 3
 ```
 
-Packets will be dropped and reinjected in another order (based on shaper packets priority) on interface from damper.conf, "iface eth0" for example. In case of overlimit packets with lowest priority will not be sent (completely dropped).
-
 And here is rules for shaping incoming TCP traffic on interface eth0.
 
 ```sh
- (accept reinjected packets)
-# iptables -t raw -A PREROUTING -m mark --mark 88 -j ACCEPT
- (pass all TCP on eth0 to shaper)
 # iptables -t raw -A PREROUTING -i eth0 -p tcp -j NFQUEUE --queue-num 3
 ```
-
-To make it work put "iface lo" in config, reinjected packets will be generated on loopback interface
 
 Make directory for statistics, if you plan to use it. And run shaper
 
@@ -76,16 +55,16 @@ Make directory for statistics, if you plan to use it. And run shaper
 Shaping outgoing TCP traffic ("upload" as seen from user, egress)
 
 ```sh
-# iptables -t raw -A OUTPUT -m mark --mark 88 -j ACCEPT
-# iptables -t raw -A PREROUTING -i eth0 -p tcp -j NFQUEUE --queue-num 3
+# iptables -t raw -A PREROUTING -i eth0 -p tcp -j NFQUEUE --queue-num 3 --queue-bypass
 ```
 where `eth0` - internal router interface
+
+`--queue-bypass` option change the behavior of iptables when no userspace application is connected to the queue. Instead of dropping packets are passed throwgh
 
 Shaping incoming TCP traffic destined to our network 192.168.0.0/24 ("download" as seen from user, ingress)
 
 ```sh
-# iptables -t raw -A OUTPUT -m mark --mark 88 -j NOTRACK
-# iptables -t mangle -A FORWARD -d 192.168.0.0/24 -o eth0 -p tcp -j NFQUEUE --queue-num 3
+# iptables -t mangle -A FORWARD -d 192.168.0.0/24 -o eth0 -p tcp -j NFQUEUE --queue-num 3 --queue-bypass
 ```
 
 Be very careful with these rules, you may lose you router network connectivity
@@ -131,6 +110,8 @@ server {
 
 }
 ```
+
+Copy content of `damper/stat/html/` directory to server root directory (`/var/www/MY.LOCATION` in this example)
 
 For Apache add this string to &lt;VirtualHost&gt;:
 
