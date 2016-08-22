@@ -14,6 +14,7 @@
 #include <unistd.h>
 #include <math.h>
 
+
 /* IP header */
 struct damper_ip_header
 {
@@ -36,8 +37,9 @@ struct damper_ip_header
 
 struct mpacket
 {
+	int id; /* ID assigned to packet by netfilter */
 	int size;
-	char packet[DAMPER_MAX_PACKET_SIZE];
+	unsigned char packet[DAMPER_MAX_PACKET_SIZE];
 };
 
 
@@ -49,21 +51,14 @@ struct stat_info
 
 struct userdata
 {
-	int socket;
-	struct sockaddr_in daddr;
-
-	int queue; /* nfqueue queue id */
+	int queue;               /* nfqueue queue id */
+	struct nfq_q_handle *qh; /* queue handle */
 
 	struct mpacket *packets;
 	double *prioarray;
 	size_t qlen;
 
 	uint64_t limit;
-
-	int mark; /* reinjected packets mark */
-	int dscp; /* or we can set DSCP (Differenciated Services Code Point) */
-
-	char interface[IFNAMSIZ];
 
 	pthread_t sender_tid;
 	pthread_mutex_t lock;

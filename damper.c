@@ -152,8 +152,6 @@ config_read(struct userdata *u, char *confname)
 
 	u->stat = 0;
 	u->statdir[0] = '\0';
-	u->mark = 0;
-	u->dscp = 0;
 
 	while (fgets(line, sizeof(line), f)) {
 		char cmd[LINE_MAX], p1[LINE_MAX], p2[LINE_MAX];
@@ -165,12 +163,6 @@ config_read(struct userdata *u, char *confname)
 		}
 		if (!strcmp(cmd, "queue")) {
 			u->queue = atoi(p1);
-		} else if (!strcmp(cmd, "iface")) {
-			strncpy(u->interface, p1, IFNAMSIZ);
-		} else if (!strcmp(cmd, "dscp")) {
-			u->dscp = atoi(p1);
-		} else if (!strcmp(cmd, "mark")) {
-			u->mark = atoi(p1);
 		} else if (!strcmp(cmd, "limit")) {
 			if (!strcmp(p1, "no")) {
 				u->limit = UINT64_MAX;
@@ -212,8 +204,6 @@ static struct userdata *
 userdata_init(char *confname)
 {
 	struct userdata *u;
-	int one = 1;
-	struct ifreq ifr;
 	size_t i;
 
 	u = malloc(sizeof(struct userdata));
@@ -265,44 +255,6 @@ userdata_init(char *confname)
 		u->prioarray[i] = DBL_MIN;
 	}
 
-	/* create raw socket */
-	u->socket = socket(AF_INET, SOCK_RAW, IPPROTO_RAW);
-	if (u->socket < 0) {
-		fprintf(stderr, "socket(AF_INET, SOCK_RAW, IPPROTO_RAW) failed: %s\n", strerror(errno));
-		goto fail_socket;
-	}
-
-	/* notify socket that we will pass our own IP headers */
-	if (setsockopt(u->socket, IPPROTO_IP, IP_HDRINCL, &one, sizeof(one)) < 0) {
-		fprintf(stderr, "setsockopt(IP_HDRINCL) on raw socket failed\n");
-		goto fail_sockopt;
-	}
-
-	if (u->mark != 0) {
-		/* set mark for outgoing packets */
-		if (setsockopt (u->socket, SOL_SOCKET, SO_MARK, &u->mark, sizeof(u->mark)) < 0) {
-			fprintf(stderr, "setsockopt(SO_MARK) on raw socket failed\n");
-			goto fail_sockopt;
-		}
-	}
-
-	memset(&ifr, 0, sizeof(ifr));
-	snprintf(ifr.ifr_name, sizeof (ifr.ifr_name), "%s", u->interface);
-	if (ioctl(u->socket, SIOCGIFINDEX, &ifr) < 0) {
-		fprintf(stderr, "ioctl(SIOCGIFINDEX) on raw socket failed (interface %s)\n", u->interface);
-		goto fail_sockopt;
-	}
-	if (setsockopt(u->socket, SOL_SOCKET, SO_BINDTODEVICE, (void *)&ifr, sizeof(ifr)) < 0) {
-		fprintf(stderr, "setsockopt(SO_BINDTODEVICE) on raw socket failed (interface %s)\n", u->interface);
-		goto fail_sockopt;
-	}
-
-	/* fill destinition address */
-	u->daddr.sin_family = AF_INET;
-	u->daddr.sin_port = 0; /* not needed in SOCK_RAW */
-	inet_pton(AF_INET, "127.0.0.1", (struct in_addr *)&(u->daddr.sin_addr.s_addr));
-	memset(u->daddr.sin_zero, 0, sizeof(u->daddr.sin_zero));
-
 	/* init mutex */
 	pthread_mutex_init(&u->lock, NULL);
 
@@ -324,9 +276,6 @@ userdata_init(char *confname)
 
 	return u;
 
-fail_sockopt:
-	close(u->socket);
-fail_socket:
 	free(u->prioarray);
 fail_prio_array:
 	free(u->packets);
@@ -354,7 +303,6 @@ userdata_destroy(struct userdata *u)
 	if (u->stat) {
 		fclose(u->statf);
 	}
-	close(u->socket);
 	free(u->prioarray);
 	free(u->packets);
 	free(u);
@@ -366,7 +314,7 @@ sender_thread(void *arg)
 #define BILLION ((uint64_t)1000000000)
 
 	struct userdata *u = arg;
-	int sendres;
+	int vres;
 	size_t i, idx = 0;
 	double max = DBL_MIN;
 	uint64_t limit;
@@ -388,22 +336,24 @@ sender_thread(void *arg)
 		}
 
 		if (max != DBL_MIN) {
-			sendres = sendto(u->socket, u->packets[idx].packet, u->packets[idx].size, 0,
-				(struct sockaddr *)&(u->daddr), (socklen_t)sizeof(u->daddr));
+			/* accept (send) packet */
+			vres = nfq_set_verdict(u->qh, u->packets[idx].id,
+				NF_ACCEPT, u->packets[idx].size, u->packets[idx].packet);
 
-			if (sendres < 0) {
-				fprintf(stderr, "sendto() failed, %s\n", strerror(errno));
+			if (vres < 0) {
+				fprintf(stderr, "nfq_set_verdict() failed, %s\n", strerror(errno));
 			}
 
+			/* mark packet buffer as empty */
 			u->prioarray[idx] = DBL_MIN;
 
 			/* update statistics */
 			if (u->stat) {
 				u->stat_info.packets_pass += 1;
-				u->stat_info.octets_pass+= sendres;
+				u->stat_info.octets_pass+= u->packets[idx].size;
 				stat_write(u);
 			}
-			sleep_ns = (sendres * BILLION) / limit;
+			sleep_ns = (u->packets[idx].size * BILLION) / limit;
 		} else {
 			/* no data to send, so just sleep for time required to transfer 100 bytes */
 			sleep_ns = 100 * BILLION / limit;
@@ -428,7 +378,8 @@ sender_thread(void *arg)
 
 
 static void
-add_to_queue(struct userdata *u, char *packet, int plen, double prio)
+add_to_queue(struct userdata *u, char *packet, int id,
+	int plen, double prio)
 {
 	size_t i, idx = 0;
 	double min = DBL_MAX;
@@ -443,15 +394,26 @@ add_to_queue(struct userdata *u, char *packet, int plen, double prio)
 
 	/* and replace it with new packet */
 	if (min < prio) {
-		if ((min != DBL_MIN) && (u->stat)) {
-			/* update statistics */
-			u->stat_info.packets_drop += 1;
-			u->stat_info.octets_drop += u->packets[idx].size;
-			stat_write(u);
+		if (min != DBL_MIN) {
+			int vres;
+
+			/* drop packet */
+			vres = nfq_set_verdict(u->qh, u->packets[idx].id, NF_DROP, 0, NULL);
+			if (vres < 0) {
+				fprintf(stderr, "nfq_set_verdict() failed, %s\n", strerror(errno));
+			}
+
+			if (u->stat) {
+				/* and update statistics */
+				u->stat_info.packets_drop += 1;
+				u->stat_info.octets_drop += u->packets[idx].size;
+				stat_write(u);
+			}
 		}
 
 		u->prioarray[idx] = prio;
 		u->packets[idx].size = plen;
+		u->packets[idx].id = id;
 		memcpy(u->packets[idx].packet, packet, plen);
 	}
 }
@@ -461,7 +423,7 @@ on_packet(struct nfq_q_handle *qh,
 		struct nfgenmsg *nfmsg,
 		struct nfq_data *nfad, void *data)
 {
-	int verdict, vres, plen;
+	int plen;
 	int id;
 	char *p;
 	uint32_t mark;
@@ -505,27 +467,17 @@ on_packet(struct nfq_q_handle *qh,
 		}
 	} else {
 		/* add to queue with positive weight */
-		if (u->dscp != 0) {
-			/* set DSCP */
-			p[1] = (p[1] & 0x03) | (u->dscp << 2);
-		}
-
-		add_to_queue(u, p, plen, weight);
+		add_to_queue(u, p, id, plen, weight);
 	}
 	pthread_mutex_unlock(&u->lock);
 
-	/* drop packet */
-	verdict = NF_DROP;
-	vres = nfq_set_verdict(qh, id, verdict, 0, NULL);
-
-	return vres;
+	return 1;
 }
 
 int
 main(int argc, char *argv[])
 {
 	struct nfq_handle *h;
-	struct nfq_q_handle *qh;
 	int fd;
 	int rv;
 	char buf[0xffff];
@@ -541,8 +493,6 @@ main(int argc, char *argv[])
 	if (!u) {
 		return EXIT_FAILURE;
 	}
-
-	pthread_create(&u->sender_tid, NULL, &sender_thread, u);
 
 	h = nfq_open();
 	if (!h) {
@@ -560,17 +510,23 @@ main(int argc, char *argv[])
 		goto fail_bind;
 	}
 
-	qh = nfq_create_queue(h, u->queue, &on_packet, u); /* queue id */
-	if (!qh) {
+	u->qh = nfq_create_queue(h, u->queue, &on_packet, u);
+	if (!u->qh) {
 		fprintf(stderr, "nfq_create_queue() with queue %d failed\n", u->queue);
 		goto fail_queue;
 	}
 
-	if (nfq_set_mode(qh, NFQNL_COPY_PACKET, 0xffff) < 0) {
+	if (nfq_set_mode(u->qh, NFQNL_COPY_PACKET, 0xffff) < 0) {
 		fprintf(stderr, "nfq_set_mode() failed\n");
 		goto fail_mode;
 	}
 
+	if (nfq_set_queue_maxlen(u->qh, u->qlen * 2) < 0) { /* multiple by two just in case */
+		fprintf(stderr, "nfq_set_queue_maxlen() failed with qlen=%lu\n", (long)u->qlen);
+		goto fail_mode;
+	}
+
+	pthread_create(&u->sender_tid, NULL, &sender_thread, u);
 
 	fd = nfq_fd(h);
 	while ((rv = recv(fd, buf, sizeof(buf), 0)) >= 0) {
@@ -580,7 +536,7 @@ main(int argc, char *argv[])
 	r = EXIT_SUCCESS;
 
 fail_mode:
-	nfq_destroy_queue(qh);
+	nfq_destroy_queue(u->qh);
 
 fail_queue:
 fail_bind:
