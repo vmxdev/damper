@@ -12,7 +12,7 @@
 #include "damper.h"
 
 
-/* convert string with optional suffixes 'k', 'm' or 'g' to bits per second */
+/* convert string with optional suffixes 'k', 'm' or 'g' (bits per second) to bytes per second */
 static uint64_t
 str2bps(const char *l)
 {
@@ -526,6 +526,7 @@ main(int argc, char *argv[])
 		goto fail_mode;
 	}
 
+	/* create sending thread */
 	pthread_create(&u->sender_tid, NULL, &sender_thread, u);
 
 	fd = nfq_fd(h);
