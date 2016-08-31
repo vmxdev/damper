@@ -135,8 +135,8 @@
 		});
 		$( "fieldset" ).controlgroup();
 
-		window.time_start = 0;
-		window.time_end = 0;
+		window.time_end = Math.floor((new Date).getTime()/1000) - 5; /* current time - 5 seconds */
+		window.time_start = window.time_end - 3600; /* show stats for last hour on start */
 
 		initchart();
 
@@ -230,9 +230,9 @@
   <fieldset>
     <legend>Autoscroll</legend>
     <label for="radio-auon">On</label>
-    <input type="radio" name="radio-au" id="radio-auon" value="1">
+    <input type="radio" name="radio-au" id="radio-auon" value="1" checked>
     <label for="radio-auoff">Off</label>
-    <input type="radio" name="radio-au" id="radio-auoff" value="0" checked>
+    <input type="radio" name="radio-au" id="radio-auoff" value="0">
   </fieldset>
 
 <div id="chart">

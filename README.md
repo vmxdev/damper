@@ -73,7 +73,7 @@ Be very careful with these rules, you may lose you router network connectivity
 
 damper comes with web-based statistics viewer, demo is available (or unavailable sometimes) here: http://damper.xenoeye.com
 
-You can zoom or pan chart by mouse, double-click returns to default
+You can zoom or pan chart by mouse, double-click shows stats for all the observation period
 
 Chart displayed using SCGI module. It can be integrated with Apache, Nginx, lighthttp or any web-server which support SCGI interface
 
