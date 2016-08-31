@@ -61,8 +61,8 @@
 	}
 
 	function loadchart() {
-		var w = 1000;
-		var h = 200;
+		var w = $(window).width() - 120; /* FIXME: 120? */
+		var h = 200; /* 200? */
 		window.time_start = Math.round(window.time_start);
 		window.time_end = Math.round(window.time_end);
 
@@ -246,14 +246,6 @@
   </fieldset>
 
   <fieldset>
-    <legend>Autoscroll</legend>
-    <label for="radio-auon">On</label>
-    <input type="radio" name="radio-au" id="radio-auon" value="1" checked>
-    <label for="radio-auoff">Off</label>
-    <input type="radio" name="radio-au" id="radio-auoff" value="0">
-  </fieldset>
-
-  <fieldset>
     <legend>Time</legend>
     <label for="radio-tmall">All period</label>
     <input type="radio" name="radio-tm" id="radio-tmall" value="all">
@@ -261,6 +253,14 @@
     <input type="radio" name="radio-tm" id="radio-tmday" value="day">
     <label for="radio-tmhour">Last hour</label>
     <input type="radio" name="radio-tm" id="radio-tmhour" value="hour" checked>
+  </fieldset>
+
+  <fieldset>
+    <legend>Autoscroll</legend>
+    <label for="radio-auon">On</label>
+    <input type="radio" name="radio-au" id="radio-auon" value="1" checked>
+    <label for="radio-auoff">Off</label>
+    <input type="radio" name="radio-au" id="radio-auoff" value="0">
   </fieldset>
 
 <div id="chart">

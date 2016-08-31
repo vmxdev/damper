@@ -91,8 +91,10 @@ Copy content of `damper/stat/html/` directory to server root directory
 Now you can run it and configure http-server
 
 ```sh
-$ ./damper_img 9001 /var/lib/damper/ &
+# ./damper_img 127.0.0.1:9001 /var/lib/damper/ www-data &
 ```
+
+damper_img will drop privileges to `www-data` and chroots to `/var/lib/damper/`
 
 Sample Nginx configuration:
 

@@ -14,6 +14,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include <pwd.h>
 
 #include "../damper.h"
 
@@ -329,14 +330,13 @@ build_chart(struct request_params *p)
 	struct stat st;
 	struct membuf mempng;  /* png in memory */
 	struct response *r = NULL;
-	char sp[PATH_MAX];
+	char sp[] = "/stat.dat";
 
 	lines = calloc(2 * sizeof(int), p->w);
 	if (!lines) {
 		goto fail;
 	}
 
-	snprintf(sp, PATH_MAX, "%s/stat.dat", statpath);
 	f = fopen(sp, "r");
 	if (!f) {
 		fprintf(stderr, "Can't open stat file\n");
@@ -633,17 +633,53 @@ main(int argc, char *argv[])
 	in_addr_t saddr;
 	int s;
 	int ret = 1, on = 1;
-	char *addr = "127.0.0.1";
+	char addr_port[HOST_NAME_MAX];
+	char addr[HOST_NAME_MAX];
+	char *colon;
 	int port;
+	struct passwd *pswd;
 
-	if (argc < 3) {
-		fprintf(stderr, "Usage: %s port stat-directory\n", argv[0]);
-		fprintf(stderr, "For example: %s 9001 /var/lib/damper/\n", argv[0]);
+	if (argc < 4) {
+		fprintf(stderr, "Usage: %s [address:]port stat-directory user\n", argv[0]);
+		fprintf(stderr, "For example: %s 127.0.0.1:9001 /var/lib/damper/ www-data\n", argv[0]);
 		goto fail;
 	}
 
-	port = atoi(argv[1]);
+	strncpy(addr_port, argv[1], HOST_NAME_MAX);
+	if ((colon = strchr(addr_port, ':')) != NULL) {
+		*colon = '\0';
+		strcpy(addr, addr_port);
+		port = atoi(colon + 1);
+	} else {
+		strcpy(addr, "127.0.0.1");
+		port = atoi(addr_port);
+	}
+
 	strncpy(statpath, argv[2], PATH_MAX);
+
+	/* get uid and gid */
+	pswd = getpwnam(argv[3]);
+	if (!pswd) {
+		fprintf(stderr, "getpwnam() for user %s failed: %s\n", argv[3], strerror(errno));
+		goto fail;
+	}
+
+	/* chroot */
+	if (chroot(statpath) != 0) {
+		fprintf(stderr, "chroot() to %s failed: %s\n", statpath, strerror(errno));
+		goto fail;
+	}
+
+	/* and change gid and uid */
+	if (setgid(pswd->pw_gid) < 0) {
+		fprintf(stderr, "setgid() failed: %s\n", strerror(errno));
+		goto fail;
+	}
+	if (setuid(pswd->pw_uid) < 0) {
+		fprintf(stderr, "setuid() failed: %s\n", strerror(errno));
+		goto fail;
+	}
+
 
 	s = socket(AF_INET, SOCK_STREAM, 0);
 	if (s < 0) {
@@ -664,6 +700,7 @@ main(int argc, char *argv[])
 		fprintf(stderr, "Invalid address: '%s'\n", addr);
 		goto fail_close;
 	}
+	name.sin_addr.s_addr = saddr;
 	if (bind(s, (struct sockaddr *)&name, sizeof(name)) < 0) {
 		fprintf(stderr, "bind() failed: %s\n", strerror(errno));
 		goto fail_close;
