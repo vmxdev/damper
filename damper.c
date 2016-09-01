@@ -326,6 +326,11 @@ sender_thread(void *arg)
 		pthread_mutex_lock(&u->lock);
 		limit = u->limit;
 
+		if ((limit == 0) || (limit == UINT64_MAX)) {
+			/* change limit to kbyte/sec, so will sleep about 0.1 sec */
+			limit = 1000;
+		}
+
 		/* search for packet with maximum priority */
 		max = DBL_MIN;
 		for (i=0; i<u->qlen; i++) {
@@ -443,6 +448,34 @@ on_packet(struct nfq_q_handle *qh,
 	}
 
 	u = data;
+
+	/* there are two special cases:
+	limit == 0 (traffic disabled) and limit == UINT64_MAX (no shaping performed) */
+	pthread_mutex_lock(&u->lock);
+	if (u->limit == 0) {
+		/* drop packet */
+		nfq_set_verdict(u->qh, id, NF_DROP, 0, NULL);
+		/* and update statistics */
+		if (u->stat) {
+			u->stat_info.packets_drop += 1;
+			u->stat_info.octets_drop += plen;
+			stat_write(u);
+		}
+	} else 	if (u->limit == UINT64_MAX) {
+		/* accept packet */
+		nfq_set_verdict(u->qh, id, NF_ACCEPT, plen, p);
+		/* and update statistics */
+		if (u->stat) {
+			u->stat_info.packets_pass += 1;
+			u->stat_info.octets_pass += plen;
+			stat_write(u);
+		}
+	}
+	pthread_mutex_unlock(&u->lock);
+
+	if ((u->limit == 0) || (u->limit == UINT64_MAX)) {
+		return 1;
+	}
 
 	mark = nfq_get_nfmark(nfad);
 
