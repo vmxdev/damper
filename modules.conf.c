@@ -14,7 +14,7 @@ struct module_info modules[] = {
 		&inhibit_big_flows_weight,	/* weight calculation */
 		&inhibit_big_flows_free		/* destructor */
 	},
-#if 0
+#if 1
 	{
 		"random",
 		&random_init,

@@ -14,7 +14,6 @@
 #include <unistd.h>
 #include <math.h>
 
-
 /* IP header */
 struct damper_ip_header
 {
@@ -60,14 +59,16 @@ struct userdata
 
 	uint64_t limit;
 
-	pthread_t sender_tid;
+	pthread_t sender_tid, stat_tid;
 	pthread_mutex_t lock;
 
 	int stat; /* enable statistics */
 	char statdir[PATH_MAX];
 	FILE *statf; /* statistics file handle */
 	struct stat_info stat_info;
-	time_t stat_start, curr_timestamp;
+	time_t stat_start, curr_timestamp, old_timestamp;
+
+	int wchart; /* enable weights chart */
 };
 
 
@@ -92,6 +93,10 @@ struct module_info
 
 	void *mptr;
 	int enabled;
+
+	FILE *st;       /* weight chart statistics file */
+	double stw;     /* sum of weights per second */
+	double nw;      /* number of weight samples per second */
 };
 
 extern struct module_info modules[];

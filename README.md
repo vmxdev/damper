@@ -34,13 +34,13 @@ Weight from each module multiplied by module coefficient and summarized to get t
 For shaping outgoing locally generated TCP traffic add this rule to your iptables:
 
 ```sh
-# iptables -t raw -A OUTPUT -p tcp -j NFQUEUE --queue-num 3
+# iptables -t raw -A OUTPUT -p tcp -j NFQUEUE --queue-num 3 --queue-bypass
 ```
 
 And here is rules for shaping incoming TCP traffic on interface eth0.
 
 ```sh
-# iptables -t raw -A PREROUTING -i eth0 -p tcp -j NFQUEUE --queue-num 3
+# iptables -t raw -A PREROUTING -i eth0 -p tcp -j NFQUEUE --queue-num 3 --queue-bypass
 ```
 
 Make directory for statistics, if you plan to use it. And run shaper

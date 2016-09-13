@@ -15,6 +15,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 #include <pwd.h>
+#include <dirent.h>
 
 #include "../damper.h"
 
@@ -62,6 +63,19 @@ struct response
 	time_t start, end;
 	uint64_t max;       /* max data value (peak) in response */
 	struct membuf img;
+	struct membuf weights;
+};
+
+/* weight chart related stuff */
+struct weight_chart
+{
+	bitmap_t rep;
+	struct membuf png;
+
+	FILE **files;
+	size_t nfiles;
+
+	double *lines;
 };
 
 /* Base64 translation table */
@@ -317,20 +331,117 @@ calc_line_h(struct stat_info *info, int *lines, size_t i, struct request_params 
 #undef SETMAX
 }
 
+static int
+wchart_init(struct weight_chart *wc, struct request_params *p)
+{
+	DIR *dir;
+	struct dirent *de;
+	char wmask[] = ".1.dat";
+	size_t i;
+
+	wc->nfiles = 0;
+	wc->files = NULL;
+
+	wc->lines = NULL;
+
+	/* try to open all files containing wmask in data dir */
+	dir = opendir("/");
+	if (!dir) {
+		fprintf(stderr, "Can't list data dir\n");
+		goto fail;
+	}
+	while ((de = readdir(dir))) {
+		char *ext, path[PATH_MAX];
+		FILE **ftmp;
+
+		ext = strstr(de->d_name, wmask);
+		if (!ext) continue;
+
+		ftmp = realloc(wc->files, sizeof(FILE *) * (wc->nfiles + 1));
+		if (!ftmp) {
+			free(wc->files);
+			goto fail_closedir;
+		}
+		wc->files = ftmp;
+
+		snprintf(path, PATH_MAX, "/%s", de->d_name);
+
+		wc->files[wc->nfiles] = fopen(path, "r");
+		if (!wc->files[wc->nfiles]) {
+			fprintf(stderr, "Can't open file '%s' in data dir\n", de->d_name);
+			continue; /* just ignore */
+		}
+		wc->nfiles++;
+	}
+	closedir(dir);
+
+	wc->lines = malloc(wc->nfiles * sizeof(double) * p->w);
+	if (!wc->lines) {
+		goto fail_freefiles;
+	}
+	for (i=0; i<(wc->nfiles * p->w); i++) {
+		wc->lines[i] = 0.0f;
+	}
+
+	wc->rep.width = p->w;
+	wc->rep.height = p->h;
+	wc->rep.pixels = calloc(sizeof (pixel_t), wc->rep.width * wc->rep.height);
+	if (!wc->rep.pixels) {
+		goto fail_freewlines;
+	}
+
+	return 1;
+
+fail_freewlines:
+	free(wc->lines);
+
+fail_freefiles:
+	for (i=0; i<wc->nfiles; i++) {
+		fclose(wc->files[i]);
+	}
+	free(wc->files);
+	wc->nfiles = 0;
+
+fail_closedir:
+	closedir(dir);
+
+fail:
+	return 0;
+}
+
+static void
+wchart_free(struct weight_chart *wc)
+{
+	size_t i;
+
+	free(wc->rep.pixels);
+	free(wc->lines);
+	free(wc->png.ptr);
+
+	for (i=0; i<wc->nfiles; i++) {
+		fclose(wc->files[i]);
+	}
+
+	free(wc->files);
+	wc->nfiles = 0;
+}
+
 /* draw chart */
 static struct response *
 build_chart(struct request_params *p)
 {
 	bitmap_t rep;
-	FILE *f;       /* statistics file */
-	time_t tstart; /* statistics start time */
+	FILE *f;                          /* statistics files */
+	time_t tstart;                    /* statistics start time */
 	size_t s;
 	int *lines, max_h;
-	size_t i, n;   /* n - number of records in file */
+	size_t i, n;                      /* n - number of records in file */
 	struct stat st;
-	struct membuf mempng;  /* png in memory */
+	struct membuf mempng;             /* png in memory */
 	struct response *r = NULL;
 	char sp[] = "/stat.dat";
+	struct weight_chart wc;
+	size_t widx;
 
 	lines = calloc(2 * sizeof(int), p->w);
 	if (!lines) {
@@ -339,9 +450,10 @@ build_chart(struct request_params *p)
 
 	f = fopen(sp, "r");
 	if (!f) {
-		fprintf(stderr, "Can't open stat file\n");
+		fprintf(stderr, "Can't open stat file: %s\n", strerror(errno));
 		goto fail_freelines;
 	}
+
 
 	/* get number of stat_info records */
 	if (fstat(fileno(f), &st) != 0) {
@@ -370,6 +482,10 @@ build_chart(struct request_params *p)
 		goto fail_close;
 	}
 
+	if (!wchart_init(&wc, p)) {
+		goto fail_close;
+	}
+
 	if (p->start == 0) {
 		p->start = tstart;
 		p->end = p->start + n;
@@ -379,31 +495,62 @@ build_chart(struct request_params *p)
 	for (i=0; i<p->w; i++) {
 		int64_t idx_start, idx_end, idx;
 		struct stat_info info;
+		double weight_h;
 
 		idx_start = (double)p->start + (double)i * (p->end - p->start) / (double)p->w;
 		idx_end   = (double)p->start + (double)(i + 1) * (p->end - p->start) / (double)p->w;
 
 		for (idx=idx_start; idx<=idx_end; idx++) {
+			double wval;
+
 			if ((idx < tstart) || (idx >= (tstart + n))) {
 				continue;
 			}
-			fseek(f, (idx - tstart)* sizeof(struct stat_info) + sizeof(time_t), SEEK_SET);
+			fseek(f, (idx - tstart) * sizeof(struct stat_info) + sizeof(time_t), SEEK_SET);
 			s = fread(&info, 1, sizeof(struct stat_info), f);
 			if (s != sizeof(struct stat_info)) {
 				continue;
 			}
 
 			calc_line_h(&info, lines, i, p, idx - idx_start);
+
+			/* weights chart */
+			for (widx=0; widx<wc.nfiles; widx++) {
+				fseek(wc.files[widx], (idx - tstart) * sizeof(double), SEEK_SET);
+				s = fread(&wval, 1, sizeof(double), wc.files[widx]);
+				if (s != sizeof(double)) {
+					continue;
+				}
+
+				wc.lines[i * wc.nfiles + widx] +=
+					(wval - wc.lines[i * wc.nfiles + widx]) / ((double)idx - idx_start + 1);
+			}
 		}
+
+		/* calculate height of weights line */
+		weight_h = 0;
+		for (widx=0; widx<wc.nfiles; widx++) {
+			weight_h += wc.lines[i * wc.nfiles + widx];
+		}
+		/* normalize values */
+		for (widx=0; widx<wc.nfiles; widx++) {
+			if (weight_h > DBL_EPSILON) {
+				wc.lines[i * wc.nfiles + widx] /= weight_h;
+			}
+		}
+
+		/* update max */
 		if (max_h < lines[i*2 + 0]) max_h = lines[i*2 + 0];
 		if (max_h < lines[i*2 + 1]) max_h = lines[i*2 + 1];
 	}
 
+
 	draw_bg(&rep);
+	draw_bg(&wc.rep);
 
 	/* draw chart */
 	for (i=0; i<p->w; i++) {
-		int line_h_p, line_h_d, j;
+		int line_h_p, line_h_d, j, wbase;
 
 		if (max_h > 0) {
 			line_h_p = p->h * lines[i * 2 + 0] / max_h;
@@ -425,6 +572,21 @@ build_chart(struct request_params *p)
 			pixel->green = 50;
 			pixel->blue = 0;
 		}
+
+		/* weights */
+		wbase = 0;
+		for (widx=0; widx<wc.nfiles; widx++) {
+			int line_h;
+
+			line_h = p->h * wc.lines[i * wc.nfiles + widx];
+			for (j=0; j<line_h; j++) {
+				pixel_t *pixel = wc.rep.pixels + p->w * (p->h - j - wbase - 1) + i;
+				pixel->red = 0;
+				pixel->green = widx * 30;
+				pixel->blue = 50;
+			}
+			wbase += line_h;
+		}
 	}
 
 
@@ -432,6 +594,11 @@ build_chart(struct request_params *p)
 	mempng.len = 0;
 	mempng.ptr = NULL;
 	write_png_to_mem(&rep, &mempng);
+
+	/* weights */
+	wc.png.len = 0;
+	wc.png.ptr = NULL;
+	write_png_to_mem(&wc.rep, &wc.png);
 
 	/* allocate response */
 	r = malloc(sizeof(struct response));
@@ -441,22 +608,30 @@ build_chart(struct request_params *p)
 
 	/* base64 encoding */
 	r->img.len = (mempng.len + 1)* 4 / 3 + 3;
-	r->img.ptr = malloc(r->img.len);
+	r->img.ptr = malloc(r->img.len); /* FIXME: check? */
 	b64encode(mempng.ptr, r->img.ptr, mempng.len);
 	r->start = p->start;
 	r->end = p->end;
 
 	r->max = max_h;
 
+	r->weights.len = (wc.png.len + 1)* 4 / 3 + 3;
+	r->weights.ptr = malloc(r->weights.len); /* FIXME: check? */
+	b64encode(wc.png.ptr, r->weights.ptr, wc.png.len);
+
 fail_resp:
+	wchart_free(&wc);
+
 	/* free raw image */
 	free(mempng.ptr);
-
 	free(rep.pixels);
+
 fail_close:
 	fclose(f);
+
 fail_freelines:
 	free(lines);
+
 fail:
 	return r;
 }
@@ -584,7 +759,7 @@ scgi_thread(void *arg)
 	if (resp) {
 		char strbuf[100];
 
-		strresponse = malloc(resp->img.len + 1024*4); /* image + 4k for other text */
+		strresponse = malloc(resp->img.len + resp->weights.len + 1024*4); /* image + 4k for other text */
 		strresponse[0] = '\0';
 		strcat(strresponse, "Status: 200 OK\r\n");
 		strcat(strresponse, "Content-Type: application/json\r\n");
@@ -601,11 +776,15 @@ scgi_thread(void *arg)
 
 		strcat(strresponse, "\"img\": \"");
 		strcat(strresponse, (char *)resp->img.ptr);
+		strcat(strresponse, "\",\n");
+		strcat(strresponse, "\"weights\": \"");
+		strcat(strresponse, (char *)resp->weights.ptr);
 		strcat(strresponse, "\"\n");
 		strcat(strresponse, "}\n");
 
 		write(scgi->s, strresponse, strlen(strresponse));
 		free(resp->img.ptr);
+		free(resp->weights.ptr);
 		free(resp);
 		free(strresponse);
 	} else {

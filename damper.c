@@ -12,6 +12,8 @@
 #include "damper.h"
 
 
+#define BILLION ((uint64_t)1000000000)
+
 /* convert string with optional suffixes 'k', 'm' or 'g' (bits per second) to bytes per second */
 static uint64_t
 str2bps(const char *l)
@@ -55,6 +57,26 @@ str2bps(const char *l)
 }
 
 static void
+wchart_init(struct userdata *u)
+{
+	char stat_path[PATH_MAX];
+	size_t i;
+
+	for (i=0; modules[i].name; i++) {
+		snprintf(stat_path, PATH_MAX, "%s/%s.1.dat", u->statdir, modules[i].name);
+		modules[i].st = fopen(stat_path, "r+");
+
+		/* can't open, try to create */
+		if (!modules[i].st) {
+			modules[i].st = fopen(stat_path, "w+");
+			if (!modules[i].st) {
+				fprintf(stderr, "Can't open file '%s'\n", stat_path);
+			}
+		}
+	}
+}
+
+static void
 stat_init(struct userdata *u)
 {
 	char stat_path[PATH_MAX];
@@ -90,7 +112,13 @@ stat_init(struct userdata *u)
 	}
 	memset(&u->stat_info, 0, sizeof(u->stat_info));
 
-	u->curr_timestamp = 0;
+	u->curr_timestamp = time(NULL);
+	u->old_timestamp = u->curr_timestamp;
+
+	if (u->wchart) {
+		wchart_init(u);
+	}
+
 	return;
 
 fail_close:
@@ -102,26 +130,11 @@ fail:
 static void
 stat_write(struct userdata *u)
 {
-	time_t t;
 	struct stat_info old_stat;
 	long int off;
 	size_t rr;
 
-	/*
-	 nfq_get_timestamp don't work with some (at least locally generated) packets, so using time()
-	*/
-	t = time(NULL);
-
-	if (t == u->curr_timestamp) {
-		return;
-	}
-
-	if (t < u->stat_start) {
-		return;
-	}
-
-
-	off = (t - u->stat_start) * sizeof(struct stat_info) + sizeof(time_t);
+	off = (u->curr_timestamp - u->stat_start) * sizeof(struct stat_info) + sizeof(time_t);
 	fseek(u->statf, off, SEEK_SET);
 	rr = fread(&old_stat, 1, sizeof(struct stat_info), u->statf);
 	if (rr == sizeof(struct stat_info)) {
@@ -135,7 +148,53 @@ stat_write(struct userdata *u)
 	fwrite(&u->stat_info, 1, sizeof(struct stat_info), u->statf);
 	memset(&u->stat_info, 0, sizeof(u->stat_info));
 
-	u->curr_timestamp = t;
+	u->old_timestamp = u->curr_timestamp;
+}
+
+static void
+wchart_write(struct userdata *u, struct module_info *m)
+{
+	long int off;
+	double avg;
+
+	avg = (m->nw > DBL_EPSILON) ? (m->stw / m->nw) : 0.0f;
+
+	off = (u->curr_timestamp - u->stat_start) * sizeof(double);
+	fseek(m->st, off, SEEK_SET);
+
+	fwrite(&avg, 1, sizeof(double), m->st);
+	m->stw = m->nw = 0.0f;
+
+	u->old_timestamp = u->curr_timestamp;
+}
+
+static void *
+stat_thread(void *arg)
+{
+	struct userdata *u = arg;
+	size_t i;
+	struct timespec ts;
+
+	for (;;) {
+		/* sleep for nearest second */
+		clock_gettime(CLOCK_MONOTONIC, &ts);
+		ts.tv_sec++;
+		ts.tv_nsec = 0;
+		clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &ts, NULL);
+
+		pthread_mutex_lock(&u->lock);
+
+		u->curr_timestamp++;
+		stat_write(u);
+
+		for (i=0; modules[i].name && modules[i].enabled; i++) {
+			wchart_write(u, &modules[i]);
+		}
+
+		pthread_mutex_unlock(&u->lock);
+	}
+
+	return NULL;
 }
 
 static int
@@ -152,6 +211,8 @@ config_read(struct userdata *u, char *confname)
 
 	u->stat = 0;
 	u->statdir[0] = '\0';
+
+	u->wchart = 0;
 
 	while (fgets(line, sizeof(line), f)) {
 		char cmd[LINE_MAX], p1[LINE_MAX], p2[LINE_MAX];
@@ -172,6 +233,10 @@ config_read(struct userdata *u, char *confname)
 		} else if (!strcmp(cmd, "stat")) {
 			if (!strcmp(p1, "yes")) {
 				u->stat = 1;
+			}
+		} else if (!strcmp(cmd, "wchart")) {
+			if (!strcmp(p1, "yes")) {
+				u->wchart = 1;
 			}
 		} else if (!strcmp(cmd, "statdir")) {
 			strncpy(u->statdir, p1, PATH_MAX);
@@ -311,7 +376,6 @@ userdata_destroy(struct userdata *u)
 static void *
 sender_thread(void *arg)
 {
-#define BILLION ((uint64_t)1000000000)
 
 	struct userdata *u = arg;
 	int vres;
@@ -356,7 +420,6 @@ sender_thread(void *arg)
 			if (u->stat) {
 				u->stat_info.packets_pass += 1;
 				u->stat_info.octets_pass+= u->packets[idx].size;
-				stat_write(u);
 			}
 			sleep_ns = (u->packets[idx].size * BILLION) / limit;
 		} else {
@@ -377,8 +440,6 @@ sender_thread(void *arg)
 	}
 
 	return NULL;
-
-#undef BILLION
 }
 
 
@@ -412,7 +473,6 @@ add_to_queue(struct userdata *u, char *packet, int id,
 				/* and update statistics */
 				u->stat_info.packets_drop += 1;
 				u->stat_info.octets_drop += u->packets[idx].size;
-				stat_write(u);
 			}
 		}
 
@@ -435,6 +495,7 @@ on_packet(struct nfq_q_handle *qh,
 	struct userdata *u;
 	double weight = DBL_EPSILON;
 	size_t i;
+	int wchartstat;
 
 	struct nfqnl_msg_packet_hdr *ph = nfq_get_msg_packet_hdr(nfad);
 	if (ph) {
@@ -452,6 +513,7 @@ on_packet(struct nfq_q_handle *qh,
 	/* there are two special cases:
 	limit == 0 (traffic disabled) and limit == UINT64_MAX (no shaping performed) */
 	pthread_mutex_lock(&u->lock);
+
 	if (u->limit == 0) {
 		/* drop packet */
 		nfq_set_verdict(u->qh, id, NF_DROP, 0, NULL);
@@ -459,7 +521,6 @@ on_packet(struct nfq_q_handle *qh,
 		if (u->stat) {
 			u->stat_info.packets_drop += 1;
 			u->stat_info.octets_drop += plen;
-			stat_write(u);
 		}
 	} else 	if (u->limit == UINT64_MAX) {
 		/* accept packet */
@@ -468,9 +529,9 @@ on_packet(struct nfq_q_handle *qh,
 		if (u->stat) {
 			u->stat_info.packets_pass += 1;
 			u->stat_info.octets_pass += plen;
-			stat_write(u);
 		}
 	}
+	wchartstat = u->wchart;
 	pthread_mutex_unlock(&u->lock);
 
 	if ((u->limit == 0) || (u->limit == UINT64_MAX)) {
@@ -484,19 +545,31 @@ on_packet(struct nfq_q_handle *qh,
 		if (modules[i].weight && modules[i].enabled) {
 			double mweight = (modules[i].weight)(modules[i].mptr, p, plen, mark);
 
-			if (mweight < 0.0) break;
-			weight += mweight * modules[i].k;
+			if (mweight < 0.0) {
+				weight = mweight;
+				break;
+			}
+			mweight *= modules[i].k;
+
+			if (wchartstat) {
+				pthread_mutex_lock(&u->lock);
+				modules[i].stw += mweight;
+				modules[i].nw  += 1.0f;
+				pthread_mutex_unlock(&u->lock);
+			}
+
+			weight += mweight;
 		}
 	}
 
 	pthread_mutex_lock(&u->lock);
 	if (weight < 0) {
-		/* don't put in queue packets with with negative weight (e.g. drop) */
+		/* drop packet with with negative weight */
+		nfq_set_verdict(u->qh, id, NF_DROP, 0, NULL);
 		/* update statistics */
 		if (u->stat) {
 			u->stat_info.packets_drop += 1;
 			u->stat_info.octets_drop += plen;
-			stat_write(u);
 		}
 	} else {
 		/* add to queue with positive weight */
@@ -561,6 +634,8 @@ main(int argc, char *argv[])
 
 	/* create sending thread */
 	pthread_create(&u->sender_tid, NULL, &sender_thread, u);
+	/* and thread for updating statistics */
+	pthread_create(&u->stat_tid, NULL, &stat_thread, u);
 
 	fd = nfq_fd(h);
 	while ((rv = recv(fd, buf, sizeof(buf), 0)) >= 0) {
