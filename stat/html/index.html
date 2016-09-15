@@ -118,10 +118,21 @@
 
 				/* chart */
 				image.src = "data:image/png;base64," + data.img;
-				wimage.src = "data:image/png;base64," + data.weights;
-
 				ctx.drawImage(image, wlabel_h - 15, 0);
-				wctx.drawImage(wimage, wlabel_h - 15, 0);
+
+				if (data.hasOwnProperty('weights')) {
+					wimage.src = "data:image/png;base64," + data.weights;
+					wctx.drawImage(wimage, wlabel_h - 15, 0);
+
+					var legend = "";
+					for(var k in data.legend) {
+						var module = Object.keys(data.legend[k])[0];
+						legend += "<font color=" + (data.legend[k])[module]
+							+ ">&nbsp;&#9632 " + module
+							+ "</font>";
+					}
+					$("#legend").html(legend);
+				}
 
 				window.time_start = data.start;
 				window.time_end = data.end;
@@ -281,9 +292,10 @@
 <div id="chart">
  <canvas id="chart-cnv">
 </div>
----
 <div id="wchart">
  <canvas id="wchart-cnv">
+</div>
+<div id="legend">
 </div>
 </body>
 </html>

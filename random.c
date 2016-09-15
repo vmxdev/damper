@@ -48,7 +48,7 @@ random_weight(void *arg, char *packet, int packetlen, int mark)
 {
 	double m;
 
-	m = (double)1.0 / (rand() + 1);
+	m = ((double)RAND_MAX + 1) / (rand() + 1);
 
 	return m;
 }
