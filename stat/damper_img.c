@@ -689,6 +689,7 @@ build_chart(struct request_params *p)
 	} else {
 		r->wn = 0;
 		r->wnames = NULL;
+		r->weights.len = 0;
 		r->weights.ptr = NULL;
 	}
 

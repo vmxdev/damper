@@ -93,7 +93,7 @@
 				canvas.attr("height", imgparams["h"] + hlabel_w);
 
 				wcanvas.attr("width", imgparams["w"] + wlabel_h);
-				wcanvas.attr("height", imgparams["h"] + hlabel_w);
+				wcanvas.attr("height", imgparams["h"]);
 
 				/* draw speed labels */
 				var LABEL_HEIGHT = 20;
@@ -132,6 +132,8 @@
 							+ "</font>";
 					}
 					$("#legend").html(legend);
+				} else {
+					$("#legend").html("");
 				}
 
 				window.time_start = data.start;
@@ -295,7 +297,7 @@
 <div id="wchart">
  <canvas id="wchart-cnv">
 </div>
-<div id="legend">
+<div id="legend" style="margin-top: 20px;">
 </div>
 </body>
 </html>
