@@ -590,8 +590,8 @@ build_chart(struct request_params *p)
 			weight_h += wc.lines[i * wc.nfiles + widx];
 		}
 		/* normalize values */
-		for (widx=0; widx<wc.nfiles; widx++) {
-			if (weight_h > DBL_EPSILON) {
+		if (weight_h > DBL_EPSILON) {
+			for (widx=0; widx<wc.nfiles; widx++) {
 				wc.lines[i * wc.nfiles + widx] /= weight_h;
 			}
 		}
@@ -611,6 +611,7 @@ build_chart(struct request_params *p)
 	/* draw chart */
 	for (i=0; i<p->w; i++) {
 		int line_h_p, line_h_d, j, wbase;
+		double wprev;
 
 		if (max_h > 0) {
 			line_h_p = p->h * lines[i * 2 + 0] / max_h;
@@ -636,15 +637,20 @@ build_chart(struct request_params *p)
 		/* weights */
 		if (wc.max <= DBL_EPSILON) continue;
 		wbase = 0;
+		wprev = 0.0f;
 		for (widx=0; widx<wc.nfiles; widx++) {
 			int line_h;
 
-			line_h = p->h * wc.lines[i * wc.nfiles + widx];
+			wprev += wc.lines[i * wc.nfiles + widx];
+			line_h = ceil(wc.lines[i * wc.nfiles + widx] * p->h);
 			for (j=0; j<line_h; j++) {
-				pixel_t *pixel = wc.rep.pixels + p->w * (p->h - j - wbase - 1) + i;
+				pixel_t *pixel;
+
+				if ((j + wbase + 1) > p->h) break;
+				pixel = wc.rep.pixels + p->w * (p->h - j - wbase - 1) + i;
 				*pixel = wc.mcolors[widx];
 			}
-			wbase += line_h;
+			wbase = round(wprev * p->h);
 		}
 	}
 
