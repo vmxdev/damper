@@ -524,7 +524,7 @@ on_packet(struct nfq_q_handle *qh,
 		}
 	} else 	if (u->limit == UINT64_MAX) {
 		/* accept packet */
-		nfq_set_verdict(u->qh, id, NF_ACCEPT, plen, p);
+		nfq_set_verdict(u->qh, id, NF_ACCEPT, plen, (unsigned char *)p);
 		/* and update statistics */
 		if (u->stat) {
 			u->stat_info.packets_pass += 1;
