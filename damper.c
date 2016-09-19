@@ -14,6 +14,8 @@
 
 #define BILLION ((uint64_t)1000000000)
 
+#define KEEP_STAT 365 /* keep statistics about one year by default */
+
 /* convert string with optional suffixes 'k', 'm' or 'g' (bits per second) to bytes per second */
 static uint64_t
 str2bps(const char *l)
@@ -183,12 +185,16 @@ stat_thread(void *arg)
 		clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &ts, NULL);
 
 		pthread_mutex_lock(&u->lock);
-
 		u->curr_timestamp++;
-		stat_write(u);
 
-		for (i=0; modules[i].name && modules[i].enabled; i++) {
-			wchart_write(u, &modules[i]);
+		if (u->stat) {
+			stat_write(u);
+		}
+
+		if (u->wchart) {
+			for (i=0; modules[i].name && modules[i].enabled; i++) {
+				wchart_write(u, &modules[i]);
+			}
 		}
 
 		pthread_mutex_unlock(&u->lock);
@@ -212,6 +218,8 @@ config_read(struct userdata *u, char *confname)
 	u->stat = 0;
 	u->statdir[0] = '\0';
 
+	u->keep_stat = 0;
+
 	u->wchart = 0;
 
 	while (fgets(line, sizeof(line), f)) {
@@ -233,6 +241,12 @@ config_read(struct userdata *u, char *confname)
 		} else if (!strcmp(cmd, "stat")) {
 			if (!strcmp(p1, "yes")) {
 				u->stat = 1;
+			}
+		} else if (!strcmp(cmd, "keepstat")) {
+			u->keep_stat = atoi(p1);
+			if (u->keep_stat <= 0) {
+				fprintf(stderr, "Strange 'keepstat' value '%s', using %d instead", p1, KEEP_STAT);
+				u->keep_stat = KEEP_STAT;
 			}
 		} else if (!strcmp(cmd, "wchart")) {
 			if (!strcmp(p1, "yes")) {
@@ -299,6 +313,10 @@ userdata_init(char *confname)
 
 	/* setup statistics */
 	if (u->stat) {
+		if (u->keep_stat == 0) {
+			fprintf(stderr, "'keepstat' not set, statistics will be kept for %d days\n", KEEP_STAT);
+			u->keep_stat = KEEP_STAT;
+		}
 		stat_init(u);
 	}
 

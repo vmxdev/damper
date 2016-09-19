@@ -48,6 +48,8 @@ struct stat_info
 	uint32_t packets_drop, octets_drop;
 } __attribute__((packed));
 
+typedef struct stat_info day_stat[60 * 60 * 24];
+
 struct userdata
 {
 	int queue;               /* nfqueue queue id */
@@ -62,9 +64,10 @@ struct userdata
 	pthread_t sender_tid, stat_tid;
 	pthread_mutex_t lock;
 
-	int stat; /* enable statistics */
+	int stat;                /* enable statistics */
+	int keep_stat;           /* how many days keep statistics */
 	char statdir[PATH_MAX];
-	FILE *statf; /* statistics file handle */
+	FILE *statf;             /* statistics file handle */
 	struct stat_info stat_info;
 	time_t stat_start, curr_timestamp, old_timestamp;
 
