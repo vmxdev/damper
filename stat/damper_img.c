@@ -614,8 +614,8 @@ build_chart(struct request_params *p)
 		double wprev;
 
 		if (max_h > 0) {
-			line_h_p = p->h * lines[i * 2 + 0] / max_h;
-			line_h_d = p->h * lines[i * 2 + 1] / max_h;
+			line_h_p = (uint64_t)p->h * lines[i * 2 + 0] / max_h;
+			line_h_d = (uint64_t)p->h * lines[i * 2 + 1] / max_h;
 		} else {
 			line_h_p = line_h_d = 0;
 		}

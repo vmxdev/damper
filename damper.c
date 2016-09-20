@@ -603,10 +603,10 @@ main(int argc, char *argv[])
 {
 	struct nfq_handle *h;
 	int fd;
-	int rv;
 	char buf[0xffff];
 	int r = EXIT_FAILURE;
 	struct userdata *u;
+	int nfqueue_size;
 
 	if (argc < 2) {
 		fprintf(stderr, "Usage: %s config.cfg\n", argv[0]);
@@ -645,7 +645,11 @@ main(int argc, char *argv[])
 		goto fail_mode;
 	}
 
-	if (nfq_set_queue_maxlen(u->qh, u->qlen * 2) < 0) { /* multiple by two just in case */
+	/* calculate queue length depending on link speed. is this correct? */
+	nfqueue_size = u->limit / 100;
+	if (nfqueue_size < 20000) nfqueue_size = 20000;
+
+	if (nfq_set_queue_maxlen(u->qh, nfqueue_size) < 0) {
 		fprintf(stderr, "nfq_set_queue_maxlen() failed with qlen=%lu\n", (long)u->qlen);
 		goto fail_mode;
 	}
@@ -656,7 +660,15 @@ main(int argc, char *argv[])
 	pthread_create(&u->stat_tid, NULL, &stat_thread, u);
 
 	fd = nfq_fd(h);
-	while ((rv = recv(fd, buf, sizeof(buf), 0)) >= 0) {
+	for (;;) {
+		int rv;
+
+		rv = recv(fd, buf, sizeof(buf), 0);
+		if (rv < 0) {
+			fprintf(stderr, "recv() on queue returned %d ('%s'). Queue full?\n", rv, strerror(errno));
+			continue; /* don't stop after error */
+		}
+
 		nfq_handle_packet(h, buf, rv);
 	}
 
