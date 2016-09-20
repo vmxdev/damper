@@ -14,7 +14,8 @@
 
 #define BILLION ((uint64_t)1000000000)
 
-#define KEEP_STAT 365 /* keep statistics about one year by default */
+#define KEEP_STAT 365    /* keep statistics about one year by default */
+#define NFQ_DEFLEN 10000 /* internal queue length */
 
 /* convert string with optional suffixes 'k', 'm' or 'g' (bits per second) to bytes per second */
 static uint64_t
@@ -248,6 +249,12 @@ config_read(struct userdata *u, char *confname)
 				fprintf(stderr, "Strange 'keepstat' value '%s', using %d instead", p1, KEEP_STAT);
 				u->keep_stat = KEEP_STAT;
 			}
+		} else if (!strcmp(cmd, "nfqlen")) {
+			u->nfqlen = atoi(p1);
+			if (u->nfqlen <= 0) {
+				fprintf(stderr, "Strange 'nfqlen' value '%s', using %d instead", p1, NFQ_DEFLEN);
+				u->nfqlen = NFQ_DEFLEN;
+			}
 		} else if (!strcmp(cmd, "wchart")) {
 			if (!strcmp(p1, "yes")) {
 				u->wchart = 1;
@@ -309,6 +316,10 @@ userdata_init(char *confname)
 
 	if (u->limit == 0) {
 		fprintf(stderr, "Something is wrong with limit, all traffic will be blocked\n");
+	}
+
+	if (u->nfqlen == 0) {
+		u->nfqlen = NFQ_DEFLEN;
 	}
 
 	/* setup statistics */
@@ -606,7 +617,6 @@ main(int argc, char *argv[])
 	char buf[0xffff];
 	int r = EXIT_FAILURE;
 	struct userdata *u;
-	int nfqueue_size;
 
 	if (argc < 2) {
 		fprintf(stderr, "Usage: %s config.cfg\n", argv[0]);
@@ -645,12 +655,8 @@ main(int argc, char *argv[])
 		goto fail_mode;
 	}
 
-	/* calculate queue length depending on link speed. is this correct? */
-	nfqueue_size = u->limit / 100;
-	if (nfqueue_size < 20000) nfqueue_size = 20000;
-
-	if (nfq_set_queue_maxlen(u->qh, nfqueue_size) < 0) {
-		fprintf(stderr, "nfq_set_queue_maxlen() failed with qlen=%lu\n", (long)u->qlen);
+	if (nfq_set_queue_maxlen(u->qh, u->nfqlen) < 0) {
+		fprintf(stderr, "nfq_set_queue_maxlen() failed with qlen=%d\n", u->nfqlen);
 		goto fail_mode;
 	}
 
@@ -665,7 +671,9 @@ main(int argc, char *argv[])
 
 		rv = recv(fd, buf, sizeof(buf), 0);
 		if (rv < 0) {
-			fprintf(stderr, "recv() on queue returned %d ('%s'). Queue full?\n", rv, strerror(errno));
+			fprintf(stderr, "recv() on queue returned %d (%s)\n", rv, strerror(errno));
+			fprintf(stderr, "Queue full? Current queue size %d, you can increase 'nfqlen' parameter in damper.conf\n",
+				u->nfqlen);
 			continue; /* don't stop after error */
 		}
 

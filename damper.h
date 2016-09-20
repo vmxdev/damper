@@ -54,6 +54,7 @@ struct userdata
 {
 	int queue;               /* nfqueue queue id */
 	struct nfq_q_handle *qh; /* queue handle */
+	int nfqlen;              /* internal queue length */
 
 	struct mpacket *packets;
 	double *prioarray;
