@@ -48,7 +48,6 @@ struct stat_info
 	uint32_t packets_drop, octets_drop;
 } __attribute__((packed));
 
-typedef struct stat_info day_stat[60 * 60 * 24];
 
 struct userdata
 {
@@ -65,16 +64,19 @@ struct userdata
 	pthread_t sender_tid, stat_tid;
 	pthread_mutex_t lock;
 
-	int stat;                /* enable statistics */
-	int keep_stat;           /* how many days keep statistics */
+	int stat;                   /* enable statistics */
+	int keep_stat;              /* how many days keep statistics */
 	char statdir[PATH_MAX];
-	FILE *statf;             /* statistics file handle */
+
 	struct stat_info stat_info;
-	time_t stat_start, curr_timestamp, old_timestamp;
+	time_t curr_timestamp, old_timestamp;
 
-	int wchart; /* enable weights chart */
+	FILE *statf;                /* stats file */
+	int   cday;                 /* current day for stats */
+	time_t daystart;            /* second when current day was started */
+
+	int wchart;                 /* enable weights chart */
 };
-
 
 /* modules */
 
@@ -98,9 +100,9 @@ struct module_info
 	void *mptr;
 	int enabled;
 
-	FILE *st;       /* weight chart statistics file */
-	double stw;     /* sum of weights per second */
-	double nw;      /* number of weight samples per second */
+	FILE *statf;
+	double stw;           /* sum of weights per second */
+	double nw;            /* number of weight samples per second */
 };
 
 extern struct module_info modules[];

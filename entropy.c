@@ -35,7 +35,7 @@ entropy_calc(struct entflow *e)
 	double m;
 	int i;
 
-	m = DBL_EPSILON;
+	m = 0.0f;
 
 	/* we can get (artificial) packet with empty payload */
 	if (e->stream_len == 0) {

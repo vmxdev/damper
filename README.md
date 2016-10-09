@@ -73,6 +73,8 @@ Be very careful with these rules, you may lose you router network connectivity
 
 damper comes with web-based statistics viewer, demo is available (or unavailable sometimes) here: http://damper.xenoeye.com
 
+By default it keeps statistics for last 31 days. Number of days to hold statistics can be altered by changing `keep_stat` key in config.
+
 You can zoom or pan chart by mouse, double-click shows stats for all the observation period
 
 Chart displayed using SCGI module. It can be integrated with Apache, Nginx, lighthttp or any web-server which support SCGI interface
@@ -83,7 +85,7 @@ To compile module:
 
 ```sh
 $ cd stat
-$ cc -g -Wall -pedantic damper_img.c -o damper_img -lpng -pthread
+$ cc -O2 -Wall -pedantic damper_img.c image.c stats.c -o damper_img -lpng -pthread
 ```
 
 Copy content of `damper/stat/html/` directory to server root directory

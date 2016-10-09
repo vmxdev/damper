@@ -5,17 +5,30 @@
 #include <netinet/in.h>
 #include <sys/ioctl.h>
 #include <ctype.h>
+#include <dirent.h>
+#include <signal.h>
 
 #include <linux/netfilter.h>
 #include <libnetfilter_queue/libnetfilter_queue.h>
 
 #include "damper.h"
+#include "day2epoch.h"
 
 
 #define BILLION ((uint64_t)1000000000)
 
 #define KEEP_STAT 365    /* keep statistics about one year by default */
 #define NFQ_DEFLEN 10000 /* internal queue length */
+
+/* indicate termination by signal */
+volatile sig_atomic_t damper_done = 0;
+
+/* signal handler */
+static void
+on_term(int signum)
+{
+	damper_done = 1;
+}
 
 /* convert string with optional suffixes 'k', 'm' or 'g' (bits per second) to bytes per second */
 static uint64_t
@@ -59,73 +72,110 @@ str2bps(const char *l)
 	return res * k / 8;
 }
 
-static void
-wchart_init(struct userdata *u)
+FILE *
+fopen_or_create(const char *path)
 {
-	char stat_path[PATH_MAX];
-	size_t i;
+	FILE *f;
 
-	for (i=0; modules[i].name; i++) {
-		snprintf(stat_path, PATH_MAX, "%s/%s.1.dat", u->statdir, modules[i].name);
-		modules[i].st = fopen(stat_path, "r+");
+	f = fopen(path, "r+");
+	if (f) return f;
+	f = fopen(path, "w+");
+	if (f) return f;
+	fprintf(stderr, "Can't open file '%s'\n", path);
+	return NULL;
+}
 
-		/* can't open, try to create */
-		if (!modules[i].st) {
-			modules[i].st = fopen(stat_path, "w+");
-			if (!modules[i].st) {
-				fprintf(stderr, "Can't open file '%s'\n", stat_path);
-			}
+static void
+stat_remove_old(struct userdata *u)
+{
+	DIR *dir;
+	struct dirent *de;
+
+	/* search for files by extension (.dat) and remove old */
+	dir = opendir(u->statdir);
+	if (!dir) {
+		fprintf(stderr, "Can't list data dir %s\n", u->statdir);
+		return;
+	}
+
+	while ((de = readdir(dir))) {
+		char *ext, *day_start;
+		char buf[PATH_MAX];
+		const int extlen = 4;
+		int day, days;
+		size_t len;
+		time_t t;
+
+		len = strlen(de->d_name);
+		if (len <= extlen) {
+			/* file name too short */
+			continue;
+		}
+
+		ext = de->d_name + (len - extlen);
+		if (strstr(ext, ".dat") == NULL) {
+			continue;
+		}
+
+		memcpy(buf, de->d_name, len - extlen);
+		buf[len - extlen] = '\0';
+
+		/* search for "." before extension */
+		day_start = strrchr(buf, '.');
+		if (!day_start) {
+			continue;
+		}
+		day_start++;
+
+		/* now day (DDMMYY in file name) is in buf */
+		day = atoi(day_start);
+		if (day <= 0) {
+			continue;
+		}
+
+		/* calculate time_t for file */
+		t = day2epoch(day);
+
+		/* days between current timestamp and file */
+		days = (u->curr_timestamp - t) / (60 * 60 * 24);
+		if (days > u->keep_stat) {
+			char path[PATH_MAX];
+
+			snprintf(path, PATH_MAX, "%s/%s", u->statdir, de->d_name);
+			fprintf(stderr, "Removing old statistics file '%s'\n", path);
+			unlink(path);
 		}
 	}
+
+	closedir(dir);
 }
 
 static void
 stat_init(struct userdata *u)
 {
-	char stat_path[PATH_MAX];
-
 	if (u->statdir[0] == '\0') {
 		fprintf(stderr, "Directory for statistics is not set\n");
 		goto fail;
 	}
 
-	snprintf(stat_path, PATH_MAX, "%s/stat.dat", u->statdir);
-	u->statf = fopen(stat_path, "r+");
-	if (u->statf) {
-		size_t s;
-
-		s = fread(&u->stat_start, 1, sizeof(time_t), u->statf);
-		if (s < sizeof(time_t)) {
-			fprintf(stderr, "Incorrect statistics file '%s'\n", stat_path);
-			goto fail_close;
-		}
-	} else {
-		/* create new file */
-		u->statf = fopen(stat_path, "w+");
-		if (!u->statf) {
-			fprintf(stderr, "Can't open file '%s'\n", stat_path);
-			goto fail;
-		}
-		u->stat_start = time(NULL);
-		if (u->stat_start == ((time_t) -1)) {
-			fprintf(stderr, "time() failed\n");
-			goto fail_close;
-		}
-		fwrite(&u->stat_start, 1, sizeof(time_t), u->statf);
-	}
-	memset(&u->stat_info, 0, sizeof(u->stat_info));
-
 	u->curr_timestamp = time(NULL);
 	u->old_timestamp = u->curr_timestamp;
 
+	u->cday = 0;
+	u->statf = NULL;
+	u->daystart = 0;
+
+	memset(&u->stat_info, 0, sizeof(u->stat_info));
+
 	if (u->wchart) {
-		wchart_init(u);
+		size_t i;
+
+		for (i=0; modules[i].name; i++) {
+			modules[i].statf = NULL;
+		}
 	}
 
 	return;
-
-fail_close:
-	fclose(u->statf);
 fail:
 	u->stat = 0;
 }
@@ -133,40 +183,78 @@ fail:
 static void
 stat_write(struct userdata *u)
 {
-	struct stat_info old_stat;
-	long int off;
-	size_t rr;
+	int day;
+	struct tm *t;
+	size_t i;
 
-	off = (u->curr_timestamp - u->stat_start) * sizeof(struct stat_info) + sizeof(time_t);
-	fseek(u->statf, off, SEEK_SET);
-	rr = fread(&old_stat, 1, sizeof(struct stat_info), u->statf);
-	if (rr == sizeof(struct stat_info)) {
-		u->stat_info.packets_pass += old_stat.packets_pass;
-		u->stat_info.octets_pass += old_stat.octets_pass;
-		u->stat_info.packets_drop += old_stat.packets_drop;
-		u->stat_info.octets_drop += old_stat.octets_drop;
+	/* get date in form DDMMYY */
+	t = gmtime(&u->curr_timestamp);
+	day = t->tm_mday * 100 * 100 + (t->tm_mon + 1) * 100 + (t->tm_year - 100);
+
+	if (day != u->cday) {
+		char path[PATH_MAX];
+
+		/* day changed, close old file */
+		if (u->statf) {
+			fclose(u->statf);
+			u->statf = NULL;
+		}
+		/* files in modules */
+		if (u->wchart) {
+			for (i=0; modules[i].name; i++) {
+				if (modules[i].statf) {
+					fclose(modules[i].statf);
+					modules[i].statf = NULL;
+				}
+			}
+		}
+
+		/* and open new files */
+		snprintf(path, PATH_MAX, "%s/dstat.%06d.dat", u->statdir, day);
+		u->statf = fopen_or_create(path);
+		if (!u->statf) {
+			/* can't open file, stop collecting stats */
+			u->stat = 0;
+			return;
+		}
+		if (u->wchart) {
+			for (i=0; modules[i].name; i++) {
+				snprintf(path, PATH_MAX, "%s/%s.%06d.dat", u->statdir, modules[i].name, day);
+				modules[i].statf = fopen_or_create(path);
+				if (!modules[i].statf) {
+					u->wchart = 0;
+					return;
+				}
+			}
+		}
+		u->cday = day;
+
+		/* calculate time_t when day start */
+		t->tm_hour = t->tm_min = t->tm_sec = 0;
+		u->daystart = timegm(t);
+
+		/* delete old statistics files */
+		stat_remove_old(u);
 	}
 
-	fseek(u->statf, off, SEEK_SET);
-	fwrite(&u->stat_info, 1, sizeof(struct stat_info), u->statf);
+	fseek(u->statf, (u->curr_timestamp - u->daystart) * sizeof(struct stat_info), SEEK_SET);
+	fwrite(&u->stat_info, 1, sizeof(struct stat_info), u->statf); /* FIXME: check result? */
+
 	memset(&u->stat_info, 0, sizeof(u->stat_info));
 
-	u->old_timestamp = u->curr_timestamp;
-}
+	/* write weights chart */
+	if (u->wchart) {
+		for (i=0; modules[i].name; i++) {
+			double avg;
 
-static void
-wchart_write(struct userdata *u, struct module_info *m)
-{
-	long int off;
-	double avg;
+			avg = (modules[i].nw > DBL_EPSILON) ? (modules[i].stw / modules[i].nw) : 0.0f;
 
-	avg = (m->nw > DBL_EPSILON) ? (m->stw / m->nw) : 0.0f;
+			fseek(modules[i].statf, (u->curr_timestamp - u->daystart) * sizeof(double), SEEK_SET);
+			fwrite(&avg, 1, sizeof(double), modules[i].statf);
 
-	off = (u->curr_timestamp - u->stat_start) * sizeof(double);
-	fseek(m->st, off, SEEK_SET);
-
-	fwrite(&avg, 1, sizeof(double), m->st);
-	m->stw = m->nw = 0.0f;
+			modules[i].stw = modules[i].nw = 0.0f;
+		}
+	}
 
 	u->old_timestamp = u->curr_timestamp;
 }
@@ -175,10 +263,9 @@ static void *
 stat_thread(void *arg)
 {
 	struct userdata *u = arg;
-	size_t i;
 	struct timespec ts;
 
-	for (;;) {
+	while (!damper_done) {
 		/* sleep for nearest second */
 		clock_gettime(CLOCK_MONOTONIC, &ts);
 		ts.tv_sec++;
@@ -190,12 +277,6 @@ stat_thread(void *arg)
 
 		if (u->stat) {
 			stat_write(u);
-		}
-
-		if (u->wchart) {
-			for (i=0; modules[i].name && modules[i].enabled; i++) {
-				wchart_write(u, &modules[i]);
-			}
 		}
 
 		pthread_mutex_unlock(&u->lock);
@@ -220,6 +301,7 @@ config_read(struct userdata *u, char *confname)
 	u->statdir[0] = '\0';
 
 	u->keep_stat = 0;
+	u->nfqlen = 0;
 
 	u->wchart = 0;
 
@@ -389,6 +471,9 @@ userdata_destroy(struct userdata *u)
 	for (i=0; modules[i].name; i++) {
 		if (modules[i].done) {
 			(modules[i].done)(modules[i].mptr);
+		}
+		if (modules[i].statf) {
+			fclose(modules[i].statf);
 		}
 	}
 
@@ -617,6 +702,7 @@ main(int argc, char *argv[])
 	char buf[0xffff];
 	int r = EXIT_FAILURE;
 	struct userdata *u;
+	struct sigaction action;
 
 	if (argc < 2) {
 		fprintf(stderr, "Usage: %s config.cfg\n", argv[0]);
@@ -660,6 +746,14 @@ main(int argc, char *argv[])
 		goto fail_mode;
 	}
 
+	/* handle term and int signals */
+	memset(&action, 0, sizeof(struct sigaction));
+	action.sa_handler = on_term;
+	sigaction(SIGTERM, &action, NULL);
+
+	action.sa_handler = on_term;
+	sigaction(SIGINT, &action, NULL);
+
 	/* create sending thread */
 	pthread_create(&u->sender_tid, NULL, &sender_thread, u);
 	/* and thread for updating statistics */
@@ -670,15 +764,22 @@ main(int argc, char *argv[])
 		int rv;
 
 		rv = recv(fd, buf, sizeof(buf), 0);
-		if (rv < 0) {
+		if ((rv < 0) && (errno != EINTR)) {
 			fprintf(stderr, "recv() on queue returned %d (%s)\n", rv, strerror(errno));
 			fprintf(stderr, "Queue full? Current queue size %d, you can increase 'nfqlen' parameter in damper.conf\n",
 				u->nfqlen);
 			continue; /* don't stop after error */
 		}
 
+		if (damper_done) {
+			break;
+		}
+
 		nfq_handle_packet(h, buf, rv);
 	}
+
+	pthread_join(u->stat_tid, NULL);
+	/* FIXME: sender thread? */
 
 	r = EXIT_SUCCESS;
 

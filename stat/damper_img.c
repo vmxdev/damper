@@ -17,6 +17,9 @@
 #include <pwd.h>
 #include <dirent.h>
 
+#include "image.h"
+#include "stats.h"
+
 #include "../damper.h"
 
 static char statpath[PATH_MAX];
@@ -27,34 +30,12 @@ struct scgi_thread_arg
 	int s; /* socket */
 };
 
-/* requested parameters */
-struct request_params
+/* request */
+struct request
 {
 	int w, h;          /* image width and height */
 	time_t start, end; /* start and end time of chart */
 	int pb;            /* packets or bytes, if zero display packets in chart */
-	int apx;           /* approximation */
-};
-
-/* A coloured pixel */
-typedef struct {
-	uint8_t red;
-	uint8_t green;
-	uint8_t blue;
-} pixel_t;
-
-/* A picture. */
-typedef struct  {
-	pixel_t *pixels;
-	size_t width;
-	size_t height;
-} bitmap_t;
-
-/* png file in memory */
-struct membuf
-{
-	size_t len;
-	unsigned char *ptr;
 };
 
 /* response */
@@ -62,19 +43,27 @@ struct response
 {
 	time_t start, end;
 	uint64_t max;       /* max data value (peak) in response */
-	struct membuf img;
+	struct pngmembuf img;
 
-	struct membuf weights;
+	struct pngmembuf weights;
 	size_t wn;
 	char   *wnames;
 	pixel_t *clrlegend;
 };
 
+/* passed and dropped octets (or packets) for one chart pixel */
+struct pixel_info
+{
+	int passed;
+	int dropped;
+};
+
+
 /* weight chart related stuff */
 struct weight_chart
 {
 	bitmap_t rep;
-	struct membuf png;
+	struct pngmembuf png;
 
 	FILE **files;
 	size_t nfiles;
@@ -86,215 +75,15 @@ struct weight_chart
 	pixel_t *mcolors;
 };
 
-/* generate unique color from string (module name) */
-
-/* calculate crc6 for string
-   taken from http://electronix.ru/forum/lofiversion/index.php/t92226.html */
-static unsigned char
-crc6(unsigned char *data, unsigned char n)
-{
-	unsigned char i, j;
-	unsigned char cs = 0, cst;
-
-	for(i = 0; i < n; ++i) {
-		cst = *(data + i);
-		for(j = 0; j < 8; ++j) {
-			cs >>= 1;
-			if(((cs << 6) ^ (cst << 7)) & (1 << 7)) {
-				cs ^= 0xC2;
-			}
-			cst >>= 1;
-		}
-	}
-	return (cs >> 2);
-}
-
-static void
-str2color(char *s, size_t n, pixel_t *p)
-{
-	unsigned char color;
-
-	color = crc6((unsigned char *)s, n);
-	p->red = (color & 0x30) << 2;
-	p->green = (color & 0x0c) << 4;
-	p->blue = (color & 0x03) << 6;
-}
-
-/* Base64 translation table */
-static const char cb64[]="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-/* encode memory block to base64 */
-static void
-b64encode(unsigned char *in, unsigned char *out, int len)
-{
-	int idx, i;
-
-#define OUT(SYM) *(out++) = SYM
-
-	for (i=0; i<len; i+=3) {
-		idx = (in[i] & 0xFC) >> 2;
-		OUT(cb64[idx]);
-		idx = (in[i] & 0x03) << 4;
-
-		if (i + 1 < len) {
-			idx |= (in[i + 1] & 0xF0) >> 4;
-			OUT(cb64[idx]);
-			idx = (in[i + 1] & 0x0F) << 2;
-			if (i + 2 < len) {
-				idx |= (in[i + 2] & 0xC0) >> 6;
-				OUT(cb64[idx]);
-				idx = in[i + 2] & 0x3F;
-				OUT(cb64[idx]);
-			} else {
-				OUT(cb64[idx]);
-				OUT('=');
-			}
-		} else {
-			OUT(cb64[idx]);
-			OUT('=');
-			OUT('=');
-		}
-	}
-	OUT('\0');
-
-#undef OUT
-}
-
-/* png writing callback */
-static void png_write_callback(png_structp png_ptr, png_bytep data, png_size_t length)
-{
-	struct membuf *m;
-	m = png_get_io_ptr(png_ptr);
-	/* FIXME: check return value */
-	m->ptr = realloc(m->ptr, m->len + length);
-	memcpy(m->ptr + m->len, data, length);
-	m->len += length;
-}
-
-static int
-write_png_to_mem(bitmap_t *bitmap, struct membuf *mem)
-{
-	png_structp png_ptr = NULL;
-	png_infop info_ptr = NULL;
-	size_t x, y;
-	png_byte **row_pointers = NULL;
-	/* "status" contains the return value of this function. At first
-	   it is set to a value which means 'failure'. When the routine
-	   has finished its work, it is set to a value which means
-	   'success'. */
-	int status = -1;
-	/* The following number is set by trial and error only. I cannot
-	   see where it it is documented in the libpng manual.
-	*/
-	int pixel_size = 3;
-	int depth = 8;
-
-	png_ptr = png_create_write_struct (PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
-	if (png_ptr == NULL) {
-		goto png_create_write_struct_failed;
-	}
-
-	info_ptr = png_create_info_struct (png_ptr);
-	if (info_ptr == NULL) {
-		goto png_create_info_struct_failed;
-	}
-
-	/* Set up error handling. */
-	if (setjmp (png_jmpbuf (png_ptr))) {
-		goto png_failure;
-	}
-
-	/* Set image attributes. */
-	png_set_IHDR (png_ptr,
-		info_ptr,
-		bitmap->width,
-		bitmap->height,
-		depth,
-		PNG_COLOR_TYPE_RGB,
-		PNG_INTERLACE_NONE,
-		PNG_COMPRESSION_TYPE_DEFAULT,
-		PNG_FILTER_TYPE_DEFAULT);
-
-	png_set_compression_level(png_ptr, Z_BEST_COMPRESSION);
-
-	/* Initialize rows of PNG. */
-	row_pointers = png_malloc (png_ptr, bitmap->height * sizeof (png_byte *));
-	for (y=0; y<bitmap->height; y++) {
-		png_byte *row =
-			png_malloc(png_ptr, sizeof (uint8_t) * bitmap->width * pixel_size);
-		row_pointers[y] = row;
-		for (x=0; x<bitmap->width; x++) {
-			pixel_t *pixel = bitmap->pixels + bitmap->width * y + x;
-			*row++ = pixel->red;
-			*row++ = pixel->green;
-			*row++ = pixel->blue;
-		}
-	}
-
-	/* Write the image data to "fp". */
-	png_set_rows(png_ptr, info_ptr, row_pointers);
-
-	png_set_write_fn(png_ptr, mem, png_write_callback, NULL);
-	png_write_png(png_ptr, info_ptr, PNG_TRANSFORM_IDENTITY, NULL);
-
-	/* The routine has successfully written the file, so we set
-	"status" to a value which indicates success. */
-	status = 0;
-
-	for (y=0; y<bitmap->height; y++) {
-		png_free(png_ptr, row_pointers[y]);
-	}
-	png_free(png_ptr, row_pointers);
-
-png_failure:
-png_create_info_struct_failed:
-	png_destroy_write_struct (&png_ptr, &info_ptr);
-png_create_write_struct_failed:
-
-	return status;
-}
-
-/* draw pixel on bitmap */
-static void
-put_pixel(bitmap_t *bmp, int x, int y, uint8_t r, uint8_t g, uint8_t b)
-{
-	pixel_t *pixel = bmp->pixels + bmp->width * y + x;
-	pixel->red = r;
-	pixel->green = g;
-	pixel->blue = b;
-}
-
-/* horizontal line */
-static void
-horiz_line(bitmap_t *bmp, int x1, int x2, int y, uint8_t r, uint8_t g, uint8_t b)
-{
-	int i;
-
-	for (i=x1; i<=x2; i++) {
-		put_pixel(bmp, i, y, r, g, b);
-	}
-}
-
-/* vertical line */
-static void
-vert_line(bitmap_t *bmp, int x, int y1, int y2, uint8_t r, uint8_t g, uint8_t b)
-{
-	int i;
-
-	for (i=y1; i<y2; i++) {
-		put_pixel(bmp, x, i, r, g, b);
-	}
-}
-
 /* background with grid */
 static void
 draw_bg(bitmap_t *bmp)
 {
-	int i;
+	size_t i;
 
 	/* fill background */
 	for (i=0; i<bmp->width; i++) {
-		int j;
+		size_t j;
 
 		for (j=0; j<bmp->height; j++) {
 			pixel_t *pixel = bmp->pixels + bmp->width * j + i;
@@ -323,351 +112,254 @@ draw_bg(bitmap_t *bmp)
 	}
 }
 
-/* calculate height of row */
-static void
-calc_line_h(struct stat_info *info, int *lines, size_t i, struct request_params *p, int n)
+static uint32_t
+octets_or_packets(struct request *p, struct stat_info *i, int pass)
 {
-/* hmm */
-#define SETMAX(x, y) x = (((x) > (y)) ? (x) : (y))
-#define SETMIN(x, y) if (x != 0) { x = (((x) < (y)) ? (x) : (y)); } else { x = y; }
-/* iterative mean, http://www.heikohoffmann.de/htmlthesis/node134.html */
-#define SETAVG(x, y, t) x = (x + (((int64_t)y - x) / (t + 1)))
-
 	if (p->pb) {
-		/* display octets */
-		switch (p->apx) {
-			case 1: /* min */
-				SETMIN (lines[i*2 + 0],  info->octets_pass);
-				SETMIN (lines[i*2 + 1],  info->octets_drop);
-				break;
-			case 2: /* avg */
-				SETAVG (lines[i*2 + 0],  info->octets_pass, n);
-				SETAVG (lines[i*2 + 1],  info->octets_drop, n);
-				break;
-			case 0: /* max */
-			default:
-				SETMAX (lines[i*2 + 0],  info->octets_pass);
-				SETMAX (lines[i*2 + 1],  info->octets_drop);
-				break;
-		}
+		return pass ? i->octets_pass : i->octets_drop;
 	} else {
-		/* or display packets */
-		switch (p->apx) {
-			case 1:
-				SETMIN (lines[i*2 + 0],  info->packets_pass);
-				SETMIN (lines[i*2 + 1],  info->packets_drop);
-				break;
-			case 2:
-				SETAVG (lines[i*2 + 0],  info->packets_pass, n);
-				SETAVG (lines[i*2 + 1],  info->packets_drop, n);
-				break;
-			case 0:
-			default:
-				SETMAX (lines[i*2 + 0],  info->packets_pass);
-				SETMAX (lines[i*2 + 1],  info->packets_drop);
-				break;
-		}
+		return pass ? i->packets_pass : i->packets_drop;
 	}
-#undef SETAVG
-#undef SETMIN
-#undef SETMAX
 }
 
-static int
-wchart_init(struct weight_chart *wc, struct request_params *p)
+/* get peak chart value */
+static uint32_t
+chart_get_peak(struct request *p, struct stat_data *sd)
 {
-	DIR *dir;
-	struct dirent *de;
-	char wmask[] = ".1.dat";
-	size_t i;
+	uint32_t peak = 0;
+	int statret;
+	struct stat_info info;           /* data cursor value */
 
-	wc->nfiles = 0;
-	wc->files = NULL;
-
-	wc->lines = NULL;
-
-	wc->mnames = NULL;
-	wc->mcolors = NULL;
-
-	wc->max = DBL_MIN;
-
-	/* try to open all files containing wmask in data dir */
-	dir = opendir("/");
-	if (!dir) {
-		fprintf(stderr, "Can't list data dir\n");
-		return 0;
+	statret = stat_data_open(sd);
+	if (!statret) {
+		goto fail;
 	}
-	while ((de = readdir(dir))) {
-		char *ext, path[PATH_MAX], *ntmp;
-		FILE **ftmp;
-		pixel_t *ptmp;
 
-		ext = strstr(de->d_name, wmask);
-		if (!ext) continue;
+	if (p->start == 0) {
+		p->start = sd->start;
+		p->end = p->start + sd->nrec;
+	}
 
-		ftmp = realloc(wc->files, sizeof(FILE *) * (wc->nfiles + 1));
-		if (!ftmp) {
-			goto fail_dir;
+	statret = stat_data_seek(sd, "dstat", p->start, &info);
+	if (!statret) {
+		goto fail_statseek;
+	}
+
+	for (;;) {
+		statret = stat_data_next(sd, &info);
+		if (!statret) {
+			break;
 		}
-		wc->files = ftmp;
 
-		/* append module name */
-		ntmp = realloc(wc->mnames, PATH_MAX * (wc->nfiles + 1));
-		if (!ntmp) {
-			goto fail_dir;
+		if (sd->t >= p->end) {
+			break;
 		}
-		wc->mnames = ntmp;
-		memcpy(wc->mnames + PATH_MAX * wc->nfiles, de->d_name, ext - de->d_name);
-		*(wc->mnames + PATH_MAX * wc->nfiles + (ext - de->d_name)) = '\0';
 
-		/* generate module color */
-		ptmp = realloc(wc->mcolors, sizeof(pixel_t) * (wc->nfiles + 1));
-		if (!ptmp) {
-			goto fail_dir;
+		if (octets_or_packets(p, &info, 1) > peak) {
+			peak = octets_or_packets(p, &info, 1);
 		}
-		wc->mcolors = ptmp;
-		str2color(&wc->mnames[wc->nfiles * PATH_MAX], ext - de->d_name, &wc->mcolors[wc->nfiles]);
-
-		snprintf(path, PATH_MAX, "/%s", de->d_name);
-
-		wc->files[wc->nfiles] = fopen(path, "r");
-		if (!wc->files[wc->nfiles]) {
-			fprintf(stderr, "Can't open file '%s' in data dir\n", de->d_name);
-			continue; /* just ignore */
+		if (octets_or_packets(p, &info, 0) > peak) {
+			peak = octets_or_packets(p, &info, 0);
 		}
-		wc->nfiles++;
-	}
-	closedir(dir);
-
-	wc->lines = malloc(wc->nfiles * sizeof(double) * p->w);
-	if (!wc->lines) {
-		return 0;
-	}
-	for (i=0; i<(wc->nfiles * p->w); i++) {
-		wc->lines[i] = 0.0f;
 	}
 
-	wc->rep.width = p->w;
-	wc->rep.height = p->h;
-	wc->rep.pixels = calloc(sizeof (pixel_t), wc->rep.width * wc->rep.height);
-	if (!wc->rep.pixels) {
-		return 0;
-	}
+fail_statseek:
+	stat_data_close(sd);
 
-	return 1;
-
-fail_dir:
-	closedir(dir);
-	return 0;
+fail:
+	return peak;
 }
 
 static void
-wchart_free(struct weight_chart *wc)
+chart_draw_row(bitmap_t * bmp, struct pixel_info *row, int line_prev, int h, int lines_per_row)
 {
-	size_t i;
+	int ih;
+	int maxgreen = 150;
+	int maxred = 150;
 
-	if (wc->rep.pixels) free(wc->rep.pixels);
-	if (wc->lines) free(wc->lines);
-	if (wc->png.ptr) free(wc->png.ptr);
+	/* make pixels a bit darker */
+	if (lines_per_row > 1) {
+		lines_per_row -= 1;
+	}
 
-	if (wc->mnames) free(wc->mnames);
-	if (wc->mcolors) free(wc->mcolors);
+	/* and display it */
+	for (ih=0; ih<h; ih++) {
+		int red_r = 0, green_r = 0, blue_r = 0;
+		int red_g = 0, green_g = 0, blue_g = 0;
+		int red, green, blue; /* result pixel colors */
 
-	if (wc->nfiles > 0) {
-		for (i=0; i<wc->nfiles; i++) {
-			if (wc->files[i]) fclose(wc->files[i]);
+		int pg = row[ih].passed;
+		int pr = row[ih].dropped;
+		int y = h - ih - 1;
+
+		if ((pg == 0) && (pr == 0)) {
+			break;
+		}
+		if (lines_per_row < 2) {
+			if (pr) {
+				/* has red color */
+				red_r = maxred;
+				green_r = blue_r = 0;
+			}
+			if (pg) {
+				/* has green */
+				green_g = maxgreen;
+				red_g = blue_g = 0;
+			}
+		} else {
+			double bright;
+
+			if (pr) {
+				bright = (double)(pr) / (double)lines_per_row;
+				if (bright > 1.0) {
+					bright = 1.0;
+				}
+
+				red_r = maxred + (255 - maxred) * (1.0 - bright);
+				green_r = 200 * (1.0 - bright);
+				blue_r = 200 * (1.0 - bright);
+			}
+
+			if (pg) {
+				bright = (double)(pg) / (double)lines_per_row;
+				if (bright > 1.0) {
+					bright = 1.0;
+				}
+
+				red_g = 200 * (1.0 - bright);
+				green_g = maxgreen + (255 - maxgreen) * (1.0 - bright);
+				blue_g = 200 * (1.0 - bright);
+			}
 		}
 
-		if (wc->files) free(wc->files);
+		if (pr && (!pg)) {
+			/* red only */
+			red = red_r;
+			green = green_r;
+			blue = blue_r;
+		} else if ((!pr) && pg) {
+			/* green only */
+			red = red_g;
+			green = green_g;
+			blue = blue_g;
+		} else {
+			/* red and green */
+			red = (red_r + red_g) / 2;
+			green = green_r / 2;
+			blue = blue_r / 2;
+		}
+
+		put_pixel(bmp, line_prev, y, red, green, blue);
 	}
-	wc->nfiles = 0;
+}
+
+static void
+chart_plot(struct request *p, struct stat_data *sd, uint32_t peak, bitmap_t *bmp)
+{
+	int statret;
+	struct stat_info info;
+	int lines_per_row, line_prev = -1;
+	struct pixel_info *row;
+
+	statret = stat_data_open(sd);
+	if (!statret) {
+		return;
+	}
+
+	statret = stat_data_seek(sd, "dstat", p->start, &info);
+	if (!statret) {
+		goto fail_statseek;
+	}
+
+	row = calloc(sizeof(struct pixel_info), p->h);
+	if (!row) {
+		goto fail_row;
+	}
+
+	lines_per_row = (p->end - p->start) / p->w + 2;
+
+	line_prev = 0;
+	for (;;) {
+		int h_pass, h_drop, line_start, line_end, i;
+
+		statret = stat_data_next(sd, &info);
+		if (!statret) {
+			break;
+		}
+
+		if (sd->t >= p->end) {
+			break;
+		}
+
+		h_pass = (uint64_t)octets_or_packets(p, &info, 1) * p->h / (peak + 1);
+		h_drop = (uint64_t)octets_or_packets(p, &info, 0) * p->h / (peak + 1);
+
+		line_start = (double)p->w * (sd->t - p->start) / (double)(p->end - p->start);
+		line_end   = (double)p->w * (sd->t - p->start + 1) / (double)(p->end - p->start);
+		if (line_end >= p->w) {
+			line_end = p->w - 1;
+		}
+
+		for (i=line_start; i<=line_end; i++) {
+			int ih;
+
+			/* new line (well, row in fact) */
+			if (line_prev != i) {
+				if (line_prev > 0) {
+					/* display row */
+					chart_draw_row(bmp, row, line_prev, p->h, lines_per_row);
+				}
+				memset(row, 0, p->h * sizeof(struct pixel_info));
+				line_prev = i;
+			}
+			/* fill row */
+			for (ih=0; ih<h_pass; ih++) {
+				row[ih].passed++;
+			}
+			for (ih=0; ih<h_drop; ih++) {
+				row[ih].dropped++;
+			}
+		}
+	}
+
+	free(row);
+fail_row:
+fail_statseek:
+	stat_data_close(sd);
 }
 
 /* draw chart */
 static struct response *
-build_chart(struct request_params *p)
+build_chart(struct request *p)
 {
 	bitmap_t rep;
-	FILE *f;                          /* statistics files */
-	time_t tstart;                    /* statistics start time */
-	size_t s;
-	int *lines, max_h;
-	size_t i, n;                      /* n - number of records in file */
-	struct stat st;
-	struct membuf mempng;             /* png in memory */
-	struct response *r = NULL;
-	char sp[] = "/stat.dat";
-	struct weight_chart wc;
-	size_t widx;
-
-	lines = calloc(2 * sizeof(int), p->w);
-	if (!lines) {
-		goto fail;
-	}
-
-	f = fopen(sp, "r");
-	if (!f) {
-		fprintf(stderr, "Can't open stat file: %s\n", strerror(errno));
-		goto fail_freelines;
-	}
-
-	/* get number of stat_info records */
-	if (fstat(fileno(f), &st) != 0) {
-		goto fail_close;
-	}
-
-	n = (st.st_size - sizeof(time_t)) / sizeof(struct stat_info);
-	if (n < 1) {
-		goto fail_close;
-	}
-
-	max_h = 0;
-	wc.max = 0.0f;
-
-	/* read header */
-	s = fread(&tstart, 1, sizeof(time_t), f);
-	if (s != sizeof(time_t)) {
-		goto fail_close;
-	}
+	struct pngmembuf mempng;         /* png in memory */
+	struct response *r = NULL;       /* response */
+	struct stat_data sd;             /* statistics data */
+	uint32_t peak;                   /* maximum height */
 
 	/* create an image */
 	rep.width = p->w;
 	rep.height = p->h;
 
-	rep.pixels = calloc(sizeof (pixel_t), rep.width * rep.height);
+	rep.pixels = calloc(sizeof(pixel_t), rep.width * rep.height);
 	if (!rep.pixels) {
-		goto fail_close;
+		goto fail_rep;
 	}
 
-	if (!wchart_init(&wc, p)) {
-		goto fail_close;
-	}
-
-	if (p->start == 0) {
-		p->start = tstart;
-		p->end = p->start + n;
-	}
-
-	/* prepare chart, get heights (passed and dropped) of each row */
-	for (i=0; i<p->w; i++) {
-		int64_t idx_start, idx_end, idx;
-		struct stat_info info;
-		double weight_h;
-
-		idx_start = (double)p->start + (double)i * (p->end - p->start) / (double)p->w;
-		idx_end   = (double)p->start + (double)(i + 1) * (p->end - p->start) / (double)p->w;
-
-		for (idx=idx_start; idx<=idx_end; idx++) {
-			double wval;
-
-			if ((idx < tstart) || (idx >= (tstart + n))) {
-				continue;
-			}
-			fseek(f, (idx - tstart) * sizeof(struct stat_info) + sizeof(time_t), SEEK_SET);
-			s = fread(&info, 1, sizeof(struct stat_info), f);
-			if (s != sizeof(struct stat_info)) {
-				continue;
-			}
-
-			calc_line_h(&info, lines, i, p, idx - idx_start);
-
-			/* weights chart */
-			for (widx=0; widx<wc.nfiles; widx++) {
-				fseek(wc.files[widx], (idx - tstart) * sizeof(double), SEEK_SET);
-				s = fread(&wval, 1, sizeof(double), wc.files[widx]);
-				if (s != sizeof(double)) {
-					continue;
-				}
-
-				wc.lines[i * wc.nfiles + widx] +=
-					(wval - wc.lines[i * wc.nfiles + widx]) / ((double)idx - idx_start + 1);
-			}
-		}
-
-		/* calculate height of weights line */
-		weight_h = 0.0f;
-		for (widx=0; widx<wc.nfiles; widx++) {
-			weight_h += wc.lines[i * wc.nfiles + widx];
-		}
-		/* normalize values */
-		if (weight_h > DBL_EPSILON) {
-			for (widx=0; widx<wc.nfiles; widx++) {
-				wc.lines[i * wc.nfiles + widx] /= weight_h;
-			}
-		}
-
-		/* update max */
-		if (wc.max < weight_h) wc.max = weight_h;
-		if (max_h < lines[i*2 + 0]) max_h = lines[i*2 + 0];
-		if (max_h < lines[i*2 + 1]) max_h = lines[i*2 + 1];
-	}
-
-
+	/* draw background */
 	draw_bg(&rep);
-	if (wc.max > DBL_EPSILON) {
-		draw_bg(&wc.rep);
+
+	peak = chart_get_peak(p, &sd);
+	if (peak > 0) {
+		chart_plot(p, &sd, peak, &rep);
 	}
-
-	/* draw chart */
-	for (i=0; i<p->w; i++) {
-		int line_h_p, line_h_d, j, wbase;
-		double wprev;
-
-		if (max_h > 0) {
-			line_h_p = (uint64_t)p->h * lines[i * 2 + 0] / max_h;
-			line_h_d = (uint64_t)p->h * lines[i * 2 + 1] / max_h;
-		} else {
-			line_h_p = line_h_d = 0;
-		}
-
-		for (j=0; j<line_h_p; j++) {
-			pixel_t *pixel = rep.pixels + p->w * (p->h - j - 1) + i;
-			pixel->red = 0;
-			pixel->green = 200;
-			pixel->blue = 0;
-		}
-
-		for (j=0; j<line_h_d; j++) {
-			pixel_t *pixel = rep.pixels + p->w * (p->h - j - 1) + i;
-			pixel->red = 100;
-			pixel->green = 50;
-			pixel->blue = 0;
-		}
-
-		/* weights */
-		if (wc.max <= DBL_EPSILON) continue;
-		wbase = 0;
-		wprev = 0.0f;
-		for (widx=0; widx<wc.nfiles; widx++) {
-			int line_h;
-
-			wprev += wc.lines[i * wc.nfiles + widx];
-			line_h = ceil(wc.lines[i * wc.nfiles + widx] * p->h);
-			for (j=0; j<line_h; j++) {
-				pixel_t *pixel;
-
-				if ((j + wbase + 1) > p->h) break;
-				pixel = wc.rep.pixels + p->w * (p->h - j - wbase - 1) + i;
-				*pixel = wc.mcolors[widx];
-			}
-			wbase = round(wprev * p->h);
-		}
-	}
-
 
 	/* Write the image to memory */
 	mempng.len = 0;
 	mempng.ptr = NULL;
-	write_png_to_mem(&rep, &mempng);
+	mk_mempng(&rep, &mempng);
 
-	/* weights */
-	wc.png.len = 0;
-	wc.png.ptr = NULL;
-	if (wc.max > DBL_EPSILON) {
-		write_png_to_mem(&wc.rep, &wc.png);
-	}
-
-	/* allocate response */
 	r = malloc(sizeof(struct response));
 	if (!r) {
 		goto fail_resp;
@@ -675,49 +367,42 @@ build_chart(struct request_params *p)
 
 	/* base64 encoding */
 	r->img.len = (mempng.len + 1)* 4 / 3 + 3;
-	r->img.ptr = malloc(r->img.len); /* FIXME: check? */
+	r->img.ptr = malloc(r->img.len);
+	if (!r->img.ptr) {
+		goto fail_r_img;
+	}
+
 	b64encode(mempng.ptr, r->img.ptr, mempng.len);
 	r->start = p->start;
 	r->end = p->end;
 
-	r->max = max_h;
+	r->max = peak;
 
-	if (wc.max > DBL_EPSILON) {
-		r->wn = wc.nfiles;
-		r->wnames = wc.mnames;
-		wc.mnames = NULL;
-		r->clrlegend = wc.mcolors;
-		wc.mcolors = NULL;
+	r->wn = 0;
+	r->wnames = NULL;
+	r->weights.len = 0;
+	r->weights.ptr = NULL;
 
-		r->weights.len = (wc.png.len + 1)* 4 / 3 + 3;
-		r->weights.ptr = malloc(r->weights.len); /* FIXME: check? */
-		b64encode(wc.png.ptr, r->weights.ptr, wc.png.len);
-	} else {
-		r->wn = 0;
-		r->wnames = NULL;
-		r->weights.len = 0;
-		r->weights.ptr = NULL;
-	}
-
-fail_resp:
 	/* free raw image */
 	free(mempng.ptr);
 	free(rep.pixels);
 
-fail_close:
-	wchart_free(&wc);
-	fclose(f);
-
-fail_freelines:
-	free(lines);
-
-fail:
 	return r;
+
+fail_r_img:
+	free(r);
+
+fail_resp:
+	free(rep.pixels);
+
+fail_rep:
+
+	return NULL;
 }
 
 /* parse script params */
 void
-parse_params(struct request_params *p, char *q)
+parse_params(struct request *p, char *q)
 {
 	char *ptr = q;
 	int last = 0;
@@ -751,8 +436,6 @@ parse_params(struct request_params *p, char *q)
 			p->end = atol(ptr + 4);
 		} else if (memcmp(ptr, "pb=", 3) == 0) {
 			p->pb = atoi(ptr + 3);
-		} else if (memcmp(ptr, "apx=", 4) == 0) {
-			p->apx = atoi(ptr + 4);
 		}
 		ptr = last ? end : end + 1;
 	}
@@ -769,7 +452,7 @@ scgi_thread(void *arg)
 	ssize_t rres;
 	int rsize, i, stop_parse;
 	struct scgi_thread_arg *scgi = arg;
-	struct request_params params;
+	struct request req;
 	struct response *resp;
 	char *strresponse;
 
@@ -793,9 +476,8 @@ scgi_thread(void *arg)
 	start++;
 	ptr = start;
 	stop_parse = 0;
-	params.w = params.h = 0;
-	params.pb  = 1; /* bytes */
-	params.apx = 0; /* max */
+	req.w = req.h = 0;
+	req.pb  = 1; /* bytes */
 
 	for (;;) {
 		for (i=0; ; i++) {
@@ -819,7 +501,7 @@ scgi_thread(void *arg)
 		}
 		if ((!stop_parse) || (stop_parse == 2)) {
 			if (strcmp("QUERY_STRING", key) == 0) {
-				parse_params(&params, val);
+				parse_params(&req, val);
 			}
 		}
 		if (stop_parse == 1) {
@@ -830,11 +512,11 @@ scgi_thread(void *arg)
 		}
 	}
 
-	if ((params.w < 100) || (params.w > 20000) || (params.h < 100) || (params.h > 20000)) {
+	if ((req.w < 100) || (req.w > 20000) || (req.h < 100) || (req.h > 20000)) {
 		/* incorrect size */
 	}
 
-	resp = build_chart(&params);
+	resp = build_chart(&req);
 	if (resp) {
 		char strbuf[100];
 
@@ -888,6 +570,7 @@ scgi_thread(void *arg)
 		free(strresponse);
 	} else {
 		strresponse = malloc(1024*4);
+		strresponse[0] = '\0';
 		strcat(strresponse, "Status: 200 OK\r\n");
 		strcat(strresponse, "Content-Type: application/json\r\n");
 		strcat(strresponse, "\r\n");

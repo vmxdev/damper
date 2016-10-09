@@ -21,6 +21,9 @@ if (typeof jQuery == 'undefined') {
 }
 </style>
 <script>
+/* var utc_timestamp = Date.UTC(now.getFullYear(),now.getMonth(), now.getDate() , 
+      now.getHours(), now.getMinutes(), now.getSeconds(), now.getMilliseconds()); */
+
 	function epoch2datetime(epoch) {
 		var d = new Date(epoch * 1000);
 		var dt = ("0" + d.getDate()).slice(-2) + '.'
@@ -91,7 +94,6 @@ if (typeof jQuery == 'undefined') {
 		imgparams["start"] = window.time_start;
 		imgparams["end"] = window.time_end;
 		imgparams["pb"]  = $("input:radio[name ='radio-pb']:checked").val();
-		imgparams["apx"] = $("input:radio[name ='radio-apx']:checked").val();
 
 		$.get( "damper-img", imgparams )
 			.done(function(data) {
@@ -241,11 +243,6 @@ if (typeof jQuery == 'undefined') {
 			loadchart();
 		});
 
-		/* approximation */
-		$('input[type=radio][name=radio-apx]').on('change', function() {
-			loadchart();
-		});
-
 		/* autoupdate */
 		$('input[type=radio][name=radio-au]').on('change', function() {
 			toggle_autoupdate();
@@ -270,16 +267,6 @@ if (typeof jQuery == 'undefined') {
     <input type="radio" name="radio-pb" id="radio-b" value="1" checked>
     <label for="radio-p">Packets</label>
     <input type="radio" name="radio-pb" id="radio-p" value="0">
-  </fieldset>
-
-  <fieldset>
-    <legend>Approximation</legend>
-    <label for="radio-max">Max</label>
-    <input type="radio" name="radio-apx" id="radio-max" value="0" checked>
-    <label for="radio-min">Min</label>
-    <input type="radio" name="radio-apx" id="radio-min" value="1">
-    <label for="radio-avg">Avg</label>
-    <input type="radio" name="radio-apx" id="radio-avg" value="2">
   </fieldset>
 
   <fieldset>
