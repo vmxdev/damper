@@ -294,8 +294,9 @@ chart_plot(struct request *p, struct stat_data *sd, uint32_t peak, bitmap_t *bmp
 		h_pass = (uint64_t)octets_or_packets(p, &info, 1) * p->h / (peak + 1);
 		h_drop = (uint64_t)octets_or_packets(p, &info, 0) * p->h / (peak + 1);
 
-		line_start = (double)p->w * (sd->t - p->start) / (double)(p->end - p->start);
-		line_end   = (double)p->w * (sd->t - p->start + 1) / (double)(p->end - p->start);
+		line_start = (uint64_t)p->w * (sd->t - p->start) / (p->end - p->start);
+		line_end   = (uint64_t)p->w * (sd->t - p->start + 1) / (p->end - p->start);
+
 		if (line_end >= p->w) {
 			line_end = p->w - 1;
 		}
@@ -309,9 +310,11 @@ chart_plot(struct request *p, struct stat_data *sd, uint32_t peak, bitmap_t *bmp
 					/* display row */
 					chart_draw_row(bmp, row, line_prev, p->h, lines_per_row);
 				}
+
 				memset(row, 0, p->h * sizeof(struct pixel_info));
 				line_prev = i;
 			}
+
 			/* fill row */
 			for (ih=0; ih<h_pass; ih++) {
 				row[ih].passed++;
@@ -517,6 +520,7 @@ scgi_thread(void *arg)
 	}
 
 	resp = build_chart(&req);
+
 	if (resp) {
 		char strbuf[100];
 
