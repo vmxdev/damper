@@ -17,7 +17,7 @@
 
 #define BILLION ((uint64_t)1000000000)
 
-#define KEEP_STAT 365    /* keep statistics about one year by default */
+#define KEEP_STAT 31     /* keep statistics about one month by default */
 #define NFQ_DEFLEN 10000 /* internal queue length */
 
 /* indicate termination by signal */
