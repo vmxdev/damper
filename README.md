@@ -71,7 +71,7 @@ Be very careful with these rules, you may lose you router network connectivity
 
 ### Statistics
 
-damper comes with web-based statistics viewer, demo is available (or unavailable sometimes) here: http://damper.xenoeye.com
+damper comes with web-based statistics viewer
 
 By default it keeps statistics for last 31 days. Number of days to hold statistics can be altered by changing `keepstat` key in config.
 
